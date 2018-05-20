@@ -1,0 +1,90 @@
+#! /usr/bin/env python
+
+import face_recognition
+import os, sys
+import pickle
+from PIL import Image
+from pysqlite2 import dbapi2 as sqlite3
+
+# Face match distance threshold
+thresh = 0.6
+
+# Carved out face folder
+carved = 'carved'
+
+# Open DB, load existing groups
+groups = {}
+print "Loading database..."
+db = sqlite3.connect('faces.db')
+cur = db.cursor()
+cur.execute('SELECT id,pickled from groups')
+for row in cur:
+    if not row[0] in groups:
+        groups[row[0]] = []
+    groups[row[0]].append(pickle.loads(row[1]))
+cur.close()
+
+# Read face descriptor lines, as written by face_tag script..
+for tagfile in sys.argv[1:]:
+    print("Grouping faces from {}".format(tagfile))
+    fold = os.path.dirname(tagfile)
+    tagfd = open(tagfile, 'rt')
+    for line in tagfd:
+        # Parse as <file>: face @ <l,t,r,b>
+        if not ('face @' in line):
+            continue
+        (file, face) = line.split(':')
+        (left, top, right, bottom) = face[8:].split(',')
+        loc = [(int(top),int(right),int(bottom),int(left))]
+        print("    {} has face @ {}".format(file, loc[0]))
+        pth = "{}/{}".format(fold, file)
+        try:
+            # Load each image and generate facial encoding
+            img = face_recognition.load_image_file(pth)
+            enc = face_recognition.face_encodings(img, loc)[0]
+            # Match to existing facial groups, brute force, from this problem statement:
+            # https://github.com/ageitgey/face_recognition/issues/433
+            match = False
+            carve = True
+            for grp in groups:
+                group = groups[grp]
+                cnt = 0
+                dists = face_recognition.face_distance(group, enc)
+                dst = 0
+                for dist in dists:
+                    dst += 1
+                    if dist < thresh:
+                        cnt += 1
+                if cnt>0 and cnt>=len(dists)/2:
+                    # Good match to this group, stash and stop
+                    group.append(enc)
+                    cur = db.cursor()
+                    cur.execute('INSERT INTO groups (id,path,left,top,right,bottom,pickled) values (?,?,?,?,?,?,?)',
+                        (grp, pth, loc[0][3], loc[0][0], loc[0][1], loc[0][2], pickle.dumps(enc)))
+                    cur.close()
+                    match = True
+                    # Stop carving out faces after 4 entries
+                    if len(group) > 4:
+                        carve = False
+                    print("    {} match group {}".format(file, grp))
+                    break
+            if not match:
+                newgrp = [enc]
+                grp = len(groups)
+                groups[grp] = newgrp
+                cur = db.cursor()
+                cur.execute('INSERT INTO groups (id,path,left,top,right,bottom,pickled) values (?,?,?,?,?,?,?)',
+                    (grp, pth, loc[0][3], loc[0][0], loc[0][1], loc[0][2], pickle.dumps(enc)))
+                cur.close()
+                print("    {} new group {}".format(file, grp))
+            if carve:
+                # Carve out the first few faces in a group for labelling
+                pil = Image.fromarray(img[loc[0][0]:loc[0][2], loc[0][3]:loc[0][1]])
+                pil.save("{}/G{}-{}.png".format(carved, grp, file))
+        except Exception, e:
+            print("    {}: oops: {}".format(file,e))
+            pass
+    tagfd.close()
+    db.commit()
+
+db.close()

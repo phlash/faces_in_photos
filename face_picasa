@@ -1,0 +1,63 @@
+#! /usr/bin/env python
+
+import os, sys
+from PIL import Image
+from pysqlite2 import dbapi2 as sqlite3
+
+# Open DB
+db = sqlite3.connect('faces.db')
+
+# Process all .picasa.ini files on cmdline..
+for ini in sys.argv:
+    cur = db.cursor()
+    face_map = {}
+    name_map = {}
+    curr_img = ''
+    curr_wid = 0
+    curr_hgt = 0
+    curr_sec = 0
+    dir = os.path.dirname(ini)
+    fd = open(ini, 'rt')
+    for line in fd:
+        try:
+            line = line.strip()
+            if line.startswith("[Contacts2]"):
+                curr_sec = 2
+            elif line.startswith('['):
+                curr_sec = 1
+                curr_img = line[1:len(line)-1]
+                tgt = "{}/{}".format(dir,curr_img)
+                img = Image.open(tgt)
+                curr_wid = img.width
+                curr_hgt = img.height
+                img.close()
+            elif curr_sec == 1 and line.startswith("faces="):
+                for rect in line[6:].split(';'):
+                    (t,h) = rect.split(',')
+                    r64 = long(t[7:len(t)-1],16)
+                    ltrb = ("{}/{}".format(dir,curr_img),
+                            int((r64>>48)&0xffff)*curr_wid/65536,
+                            int((r64>>32)&0xffff)*curr_hgt/65536,
+                            int((r64>>16)&0xffff)*curr_wid/65536,
+                            int((r64>>0)&0xffff)*curr_hgt/65536)
+                    face_map[ltrb] = h
+            elif curr_sec == 2:
+                (h,n) = line.split('=')
+                name_map[h] = n.split(';')[0]
+        except Exception, e:
+            print "Oops({}): {} @ {}".format(e,ini,line)
+            continue
+    fd.close()
+    for ltrb in face_map:
+        hash = face_map[ltrb]
+        if hash in name_map:
+            name = name_map[hash]
+        else:
+            name = None
+        data = ltrb + (name,)
+        cur.execute('INSERT INTO faces(path,left,top,right,bottom,human) values (?,?,?,?,?,?)', data)
+        print "face @ {} = {}".format(ltrb,name)
+    cur.close()
+    db.commit()
+
+db.close()
