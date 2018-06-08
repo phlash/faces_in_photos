@@ -52,6 +52,8 @@ for row in cur:
     fnd = 0
     rct += 1
     enc = pickle.loads(row[0])
+    lhum = None
+    ldis = thresh
     for hum in groups:
         (cnt,avg) = groups[hum]
         # Stolen from: https://stackoverflow.com/questions/8860850/euclidean-distance-with-weights
@@ -60,8 +62,12 @@ for row in cur:
         if dist < thresh:
             fnd += 1
             print "possible face({}:{}): {} in {}@{},{},{},{}".format(fnd,dist,hum,row[1],row[2],row[3],row[4],row[5])
+            if dist < ldis:
+                ldis = dist
+                lhum = hum
     if fnd > 0:
         tot += 1
+        print "most likely face({}): {} in {}@{},{},{},{}".format(ldis,lhum,row[1],row[2],row[3],row[4],row[5])
 
 print "Found {} possible new faces from {}".format(tot,rct)
 db.close()
