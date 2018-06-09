@@ -1,0 +1,65 @@
+#! /usr/bin/env python
+
+import os, sys
+from pysqlite2 import dbapi2 as sqlite3
+import xml.etree.ElementTree as et
+
+# Open the DB
+dbfile = 'faces.db'
+if len(sys.argv)>1:
+    dbfile = sys.argv[1]
+if not os.path.isfile(dbfile):
+    print "No such file: {}".format(dbfile)
+    sys.exit(1)
+db = sqlite3.connect(dbfile)
+cur = db.cursor()
+
+# Load distinct humans..
+cur.execute('SELECT distinct(human) from tag_groups')
+hums = []
+hums.append('_Unknown_')    # special value to adjust query..
+for row in cur:
+    hum = str(row[0])
+    hums.append(hum)
+
+# Ensure there is a catalog file for each human
+ncnt = 0
+ucnt = 0
+for hum in hums:
+    catfile = os.environ['HOME'] + '/.local/share/gthumb/catalogs/' + hum + '.catalog'
+    tree = None
+    fils = None
+    if os.path.isfile(catfile):
+        # open existing catalog, remove files
+        tree = et.parse(catfile)
+        root = tree.getroot()
+        fils = root.find('files')
+        root.remove(fils)
+        fils = et.SubElement(root, 'files')
+        ucnt += 1
+    else:
+        # Making a new catalog...
+        root = et.Element('catalog')
+        root.set('version', '1.0')
+        tree = et.ElementTree(root)
+        name = et.SubElement(root, 'name')
+        name.text = hum
+        fils = et.SubElement(root, 'files')
+        ncnt += 1
+    # Put in the files..
+    fcnt = 0
+    if '_Unknown_' == hum:
+        cur.execute('SELECT distinct(path) from groups where _rowid_ not in (select grow from tag_groups)')
+    else:
+        cur.execute('SELECT g.path from groups as g, tag_groups as t where t.grow = g._rowid_ and t.human = ?', (hum,))
+    for row in cur:
+        path = str(row[0])
+        fil = et.SubElement(fils, 'file')
+        fil.set('uri', 'file://' + path)
+        fcnt += 1
+    # Save the catalog
+    tree.write(catfile, encoding="UTF-8", xml_declaration=True)
+    print "Saved {} files for human {}".format(fcnt, hum)
+
+print "Updated {} catalogs, created {}".format(ucnt, ncnt)
+db.close()
