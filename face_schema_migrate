@@ -1,0 +1,88 @@
+#! /usr/bin/env python
+
+import os, sys
+import hashlib
+from pysqlite2 import dbapi2 as sqlite3
+
+# Open the DB
+dbfile = 'faces.db'
+if len(sys.argv)>1:
+    dbfile = sys.argv[1]
+if not os.path.isfile(dbfile):
+    print "No such file: {}".format(dbfile)
+    sys.exit(1)
+db = sqlite3.connect(dbfile)
+cur = db.cursor()
+cur.execute('PRAGMA foreign_keys = ON')
+
+# Load existing hashes into local dict for speedy duplicate detection
+print "loading existing hashes.."
+hsh = {}
+phsh = {}
+cur.execute("SELECT path, hash from file_paths")
+for row in cur:
+    if row[1] in hsh:
+        pth = hsh[row[1]]
+    else:
+        pth = []
+        hsh[row[1]] = pth
+    pth.append(row[0])
+    phsh[row[0]] = row[1]
+
+# Generate hashes of all existing (v1 schema) files, populate v2 schema
+print "hashing remaining files..."
+cnt = 0
+c2 = db.cursor()
+c2.execute('PRAGMA foreign_keys = ON')
+cur.execute('SELECT DISTINCT(path) as path from groups where path not in (select DISTINCT(path) from file_paths)')
+for row in cur:
+    sha256 = hashlib.sha256()
+    with open(row[0], 'rb') as f:
+        while True:
+            d = f.read(65536)       # 64ki block size, might need tuning..
+            if not d:
+                break
+            sha256.update(d)
+    h = sha256.hexdigest()
+    #print "{}: {}".format(h, row[0])
+    if h in hsh:
+        pth = hsh[h]
+        print "{}: duplicates: {}".format(h, len(pth))
+    else:
+        pth = []
+        hsh[h] = pth
+        c2.execute("INSERT INTO file_hashes (hash) values (?)", (h,))
+    pth.append(row[0])
+    c2.execute("INSERT INTO file_paths (path, hash) values (?,?)", (row[0], h))
+    cnt += 1
+    if ((cnt % 100)==0):
+        print "processed {}".format(cnt)
+
+print "mapping face data into picasa groups..."
+# well-known hash value for unknown faces, always group 0
+unkk ='ffffffffffffffff'
+unkl ='_Unknown_'
+grps = {}
+grps[unkk] = 0
+cur.execute('insert or ignore into face_labels (label) values (?)', (unkl,))
+cur.execute('insert or ignore into face_groups (grp,label) values (?,?)', (0,unkl))
+cur.execute('select f.path,g.left,g.top,g.right,g.bottom,g.pickled,f.hash,f.human from faces as f, groups as g where f.path=g.path and f.left<g.left and f.top<g.top and f.right>g.right and f.bottom>g.bottom')
+for row in cur:
+    path = row[0]
+    ltrb = (row[1],row[2],row[3],row[4])
+    pick = row[5]
+    hash = row[6]
+    humn = row[7]
+    if None == humn or len(humn) == 0:
+        humn = unkl
+    if hash in grps:
+        id = grps[hash]
+    else:
+        id = len(grps)
+        grps[hash] = id
+        c2.execute('insert or ignore into face_labels (label) values (?)', (humn,))
+        c2.execute('insert or ignore into face_groups (grp,label) values (?,?)', (id,humn))
+    data = ltrb + (pick,phsh[path],id)
+    c2.execute('insert into face_data (left,top,right,bottom,pickled,hash,grp) values (?,?,?,?,?,?,?)',data)
+db.commit()
+db.close()
