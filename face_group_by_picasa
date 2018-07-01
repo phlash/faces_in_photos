@@ -45,9 +45,10 @@ print "{} distinct humans from {} faces".format(len(groups),rct)
 print "testing other faces..."
 tot = 0
 rct = 0
+lik = {}
 cur.execute('SELECT pickled from weights')
 w = pickle.loads(cur.fetchone()[0])
-cur.execute('SELECT pickled, path, left, top, right, bottom from groups where _rowid_ not in (select distinct(grow) from tag_groups)')
+cur.execute('SELECT pickled, path, left, top, right, bottom, _rowid_ from groups where _rowid_ not in (select distinct(grow) from tag_groups)')
 for row in cur:
     fnd = 0
     rct += 1
@@ -68,6 +69,16 @@ for row in cur:
     if fnd > 0:
         tot += 1
         print "most likely face({}): {} in {}@{},{},{},{}".format(ldis,lhum,row[1],row[2],row[3],row[4],row[5])
+        if lhum in lik:
+            lik[lhum].append(row[6])
+        else:
+            lik[lhum] = [row[6]]
 
 print "Found {} possible new faces from {}".format(tot,rct)
+
+# update the tagged group table with new faces
+for hum in lik:
+    for rid in lik[hum]:
+        cur.execute('INSERT INTO tag_groups (grow, human) values (?, ?)', (rid, 'X_'+hum))
+db.commit()
 db.close()

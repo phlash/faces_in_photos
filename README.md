@@ -23,6 +23,16 @@ These UX stories lead design towards the following principles:
 
 Early decisions:
 * Metadata in images or separate files?
-  * Not all formats support metadata
-  * Editing source files is bad (invariance broken)
-  * How to manage file movements if separate (via new images/removal processes)?
+  * Not all formats support metadata.
+  * Editing source files is bad (invariance broken).
+  * How to manage file movements if separate (via new images/removal processes, greatly assisted by hash identification, not paths)?
+  * Metadata in SQLite, which points to a series of storage paths that form the corpus of images. Published schema :)
+  * file hash <= file path mapping. Updated/created/removed by scheduled scanner. Index both columns for lookup.
+  * file hash <= face data (rectangles, pickled vector of face descriptor values) mapping.
+  * face data => face group mapping.
+  * face group => face label mapping (supports multiple averages).
+* Scanner outputs:
+  * New/Removed file paths & hashes, duplicates indicated.
+  * New/Removed faces (by label/group/path).
+  * New Unknown faces (by group/path).
+
