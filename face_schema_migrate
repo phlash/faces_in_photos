@@ -54,6 +54,7 @@ for row in cur:
         c2.execute("INSERT INTO file_hashes (hash) values (?)", (h,))
     pth.append(row[0])
     c2.execute("INSERT INTO file_paths (path, hash) values (?,?)", (row[0], h))
+    phsh[row[0]] = h
     cnt += 1
     if ((cnt % 100)==0):
         print "processed {}".format(cnt)
