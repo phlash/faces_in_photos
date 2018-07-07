@@ -1,0 +1,121 @@
+#! /usr/bin/env python
+#
+# Scheduled task (use the cron Luke) to find all new / moved / removed image files since last run, and:
+# 1- update database with moved / removed images, write list of moved / removed files and removed faces
+# 2- detect faces in new images, classify against existing groups, write list of new labelled and unlabelled faces
+#
+# We use a mark/release strategy to find all file changes, by re-hashing the search tree(s), and noting all
+# hashes we already have, then anything we didn't find has been removed, some files may have moved (check paths)
+#
+# New hashes are candidate new images, so try loading and detecting faces..
+
+import os, sys, syslog, hashlib
+from pysqlite2 import dbapi2 as sqlite3
+
+# Well-known configuration file location
+cfgfile = '/etc/defaults/face_scanner'
+
+# Default configuration values
+cfg = {}
+cfg['dbfile'] = '/etc/face_scanner.db'
+cfg['verbose'] = False
+
+# Apply config overrides (if any)
+if os.path.isfile(cfgfile):
+    with open(cfgfile, "rt") as c:
+        for l in c:
+            if l.startswith('#') or ('=' not in l):
+                continue
+            k,v = l.partition('=')[::2]
+            cfg[k.strip()] = v.strip()
+
+if len(sys.argv)>1:
+    for l in sys.argv[1:]:
+        k,v = l.partition('=')[::2]
+        cfg[k.strip()] = v.strip()
+
+# Logger
+syslog.openlog('face_scanner', syslog.LOG_PID)
+syslog.syslog(syslog.LOG_INFO, 'starting up..')
+def logmsg(msg):
+    if cfg['verbose']:
+        print msg
+    syslog.syslog(syslog.LOG_INFO, msg)
+
+def logerr(msg):
+    print msg
+    syslog.syslog(syslog.LOG_ERR, msg)
+
+
+# Open the DB
+if not os.path.isfile(cfg['dbfile']):
+    logerr("No such file: {}".format(cfg['dbfile']))
+    sys.exit(1)
+db = sqlite3.connect(cfg['dbfile'])
+cur = db.cursor()
+cur.execute('PRAGMA foreign_keys = ON')
+
+# Load existing hashes into forward and reverse dictionaries
+logmsg("loading existing hashes..")
+htp = {}
+pth = {}
+cur.execute("SELECT path, hash from file_paths")
+for row in cur:
+    if row[1] in htp:
+        p = htp[row[1]]
+    else:
+        p = []
+        htp[row[1]] = p
+    p.append(row[0])
+    pth[row[0]] = row[1]
+logmsg("loaded {} hashes for {} files".format(len(htp), len(pth)))
+
+# Start hashing files in search tree(s)..
+def hashfile(cand):
+    sha256 = hashlib.sha256()
+    with open(cand, 'rb') as f:
+        while True:
+            d = f.read(65536)       # 64ki block size, might need tuning..
+            if not d:
+                break
+            sha256.update(d)
+    return sha256.hexdigest()
+
+# Candidate new images
+candidates = []
+# Source paths to search
+src = []
+cur.execute('SELECT path from source_paths')
+for row in cur:
+    src.append(row[0])
+cnt = 0
+for path in src:
+    logmsg("walking tree from {}".format(path))
+    for root, subs, files in os.walk(path):
+        for f in files:
+            cand = os.path.join(root, f)
+            hash = hashfile(cand)
+            if hash in htp:
+                pl = htp[hash]
+                if cand in pth:
+                    pth.pop(cand)       # Known hash, in known location, ignore it.
+                    pl.remove(cand)
+                else:
+                    pth[cand] = hash    # Known hash in new location, add for update.
+                    pl.append(cand)
+            else:
+                candidates.append((hash, cand))
+            cnt += 1
+            if (cnt % 1000) == 0:
+                logmsg("{} files hashed..".format(cnt))
+
+# Stop and dump state!
+print "Remaining paths in pth dictionary"
+for path in pth:
+    print "{} -> {}".format(path, pth[path])
+print "Candidate image files"
+for cand in candidates:
+    print cand
+
+db.commit()
+db.close()
