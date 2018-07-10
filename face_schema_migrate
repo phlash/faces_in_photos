@@ -19,6 +19,10 @@ cur.execute('PRAGMA foreign_keys = ON')
 print "loading existing hashes.."
 hsh = {}
 phsh = {}
+cur.execute("SELECT hash from file_hashes")
+for row in cur:
+    hsh[row[0]] = []
+
 cur.execute("SELECT path, hash from file_paths")
 for row in cur:
     if row[1] in hsh:
@@ -38,6 +42,7 @@ cur.execute('SELECT DISTINCT(path) as path from groups where path not in (select
 for row in cur:
     sha256 = hashlib.sha256()
     with open(row[0], 'rb') as f:
+        siz = os.fstat(f.fileno()).st_size
         while True:
             d = f.read(65536)       # 64ki block size, might need tuning..
             if not d:
@@ -47,13 +52,13 @@ for row in cur:
     #print "{}: {}".format(h, row[0])
     if h in hsh:
         pth = hsh[h]
-        print "{}: duplicates: {}".format(h, len(pth))
+        print "{}: duplicates: {}".format(h, len(pth)+1)
     else:
         pth = []
         hsh[h] = pth
         c2.execute("INSERT INTO file_hashes (hash) values (?)", (h,))
     pth.append(row[0])
-    c2.execute("INSERT INTO file_paths (path, hash) values (?,?)", (row[0], h))
+    c2.execute("INSERT INTO file_paths (path, size, hash) values (?,?,?)", (row[0], siz, h))
     phsh[row[0]] = h
     cnt += 1
     if ((cnt % 100)==0):
@@ -85,5 +90,8 @@ for row in cur:
         c2.execute('insert or ignore into face_groups (grp,label) values (?,?)', (id,humn))
     data = ltrb + (pick,phsh[path],id)
     c2.execute('insert into face_data (left,top,right,bottom,pickled,hash,grp) values (?,?,?,?,?,?,?)',data)
+
+print "copying weights"
+cur.execute('INSERT INTO face_weights select * from weights')
 db.commit()
 db.close()

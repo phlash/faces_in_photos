@@ -25,14 +25,20 @@ CREATE TABLE IF NOT EXISTS source_paths (path not null);
 -- store file hashes (unique) and map multiple paths to them
 CREATE TABLE IF NOT EXISTS file_hashes (hash primary key);
 CREATE INDEX IF NOT EXISTS idx_file_hashes_hash on file_hashes (hash);
-CREATE TABLE IF NOT EXISTS file_paths (path not null, hash references file_hashes(hash) on update restrict on delete restrict not null);
+CREATE TABLE IF NOT EXISTS file_paths (path not null, size not null, hash references file_hashes(hash) on update restrict on delete restrict not null);
 CREATE INDEX IF NOT EXISTS idx_file_paths_path on file_paths (path);
 --
--- store labels for faces, map multiple groups to them
+-- processing state, a list of candidate image files to check and include/ignore
+CREATE TABLE IF NOT EXISTS file_candidates (path not null, hash references file_hashes(hash) on update restrict on delete restrict not null);
+--
+-- store labels for faces, map multiple groups to them (and store average face for the group)
 CREATE TABLE IF NOT EXISTS face_labels (label primary key);
 CREATE INDEX IF NOT EXISTS idx_face_labels_label on face_labels (label);
-CREATE TABLE IF NOT EXISTS face_groups (grp primary key, label references face_labels(label) on update cascade on delete restrict not null);
+CREATE TABLE IF NOT EXISTS face_groups (grp primary key, pickled, label references face_labels(label) on update cascade on delete restrict not null);
 CREATE INDEX IF NOT EXISTS idx_face_groups_grp on face_groups (grp);
+--
+-- store face vector weighting
+CREATE TABLE IF NOT EXISTS face_weights(pickled);
 --
 -- store face data, map to a file hash and face group
 CREATE TABLE IF NOT EXISTS face_data (

@@ -9,8 +9,10 @@
 #
 # New hashes are candidate new images, so try loading and detecting faces..
 
-import os, sys, syslog, hashlib
+import os, sys, syslog, hashlib, numpy, pickle, math
 from pysqlite2 import dbapi2 as sqlite3
+from PIL import Image, ExifTags
+import face_recognition
 
 # Well-known configuration file location
 cfgfile = '/etc/defaults/face_scanner'
@@ -19,10 +21,13 @@ cfgfile = '/etc/defaults/face_scanner'
 cfg = {}
 cfg['dbfile'] = '/etc/face_scanner.db'
 cfg['verbose'] = False
+cfg['report_count'] = 1000
+cfg['threshold'] = 0.3
+cfg['unknown'] = '_Unknown_'
 
 # Apply config overrides (if any)
 if os.path.isfile(cfgfile):
-    with open(cfgfile, "rt") as c:
+    with open(cfgfile, 'rt') as c:
         for l in c:
             if l.startswith('#') or ('=' not in l):
                 continue
@@ -56,66 +61,259 @@ cur = db.cursor()
 cur.execute('PRAGMA foreign_keys = ON')
 
 # Load existing hashes into forward and reverse dictionaries
-logmsg("loading existing hashes..")
+logmsg("loading existing hashes & candidates..")
 htp = {}
 pth = {}
-cur.execute("SELECT path, hash from file_paths")
+cur.execute('SELECT path, size, hash from file_paths')
 for row in cur:
-    if row[1] in htp:
-        p = htp[row[1]]
+    if row[2] in htp:
+        p = htp[row[2]]
     else:
         p = []
-        htp[row[1]] = p
-    p.append(row[0])
-    pth[row[0]] = row[1]
-logmsg("loaded {} hashes for {} files".format(len(htp), len(pth)))
+        htp[row[2]] = p
+    p.append((row[0],row[1]))
+    pth[row[0]] = (row[1],row[2])
+
+# Candidate new images
+candidates = {}
+cur.execute('SELECT path, hash from file_candidates')
+for row in cur:
+    candidates[row[1]] = row[0]
+
+logmsg("loaded {} hashes for {} files, {} candidates".format(len(htp), len(pth), len(candidates)))
 
 # Start hashing files in search tree(s)..
 def hashfile(cand):
     sha256 = hashlib.sha256()
     with open(cand, 'rb') as f:
         while True:
-            d = f.read(65536)       # 64ki block size, might need tuning..
+            d = f.read(1048576)       # 1Mi block size, might need tuning..
             if not d:
                 break
             sha256.update(d)
     return sha256.hexdigest()
 
-# Candidate new images
-candidates = []
 # Source paths to search
 src = []
 cur.execute('SELECT path from source_paths')
 for row in cur:
     src.append(row[0])
+if 'source_path' in cfg:
+    src = []
+    src.append(cfg['source_path'])
 cnt = 0
+opt = 0
+knw = 0
+mov = 0
+can = 0
+dup = 0
+dirty = False
 for path in src:
     logmsg("walking tree from {}".format(path))
     for root, subs, files in os.walk(path):
         for f in files:
+            cnt += 1
             cand = os.path.join(root, f)
-            hash = hashfile(cand)
-            if hash in htp:
+            # special check for our own database file.. ignore it!
+            if cfg['dbfile'] == cand:
+                continue
+            size = os.stat(cand).st_size
+            # Optimisation, skip hashing if path and size match, assume we have it
+            # NB: We keep file info on everything, incluing non-image files, as this
+            # allows us to skip them next time
+            if cand in pth and (pth[cand][0] == size):
+                opt += 1
+                hash = pth[cand][1]
+            else:
+                hash = hashfile(cand)
+
+            if hash in htp:         # Known hash
+                knw += 1
                 pl = htp[hash]
                 if cand in pth:
                     pth.pop(cand)       # Known hash, in known location, ignore it.
-                    pl.remove(cand)
+                    pl.remove((cand,size))
                 else:
-                    pth[cand] = hash    # Known hash in new location, add for update.
-                    pl.append(cand)
-            else:
-                candidates.append((hash, cand))
-            cnt += 1
-            if (cnt % 1000) == 0:
-                logmsg("{} files hashed..".format(cnt))
+                    mov += 1            # Known hash in new location, add to db.
+                    cur.execute('INSERT INTO file_paths (path,size,hash) values (?,?,?)', (cand,size,hash))  
+                    dirty = True
+                    pl.append((cand,size))
 
-# Stop and dump state!
-print "Remaining paths in pth dictionary"
+            else:                   # Unknown hash
+                can += 1
+                if hash not in candidates:
+                    candidates[hash] = cand
+                    cur.execute('INSERT OR IGNORE INTO file_hashes (hash) values (?)', (hash,))
+                    cur.execute('INSERT OR IGNORE INTO file_candidates (path,hash) values (?,?)', (cand,hash))
+                else:
+                    dup += 1
+                cur.execute('INSERT INTO file_paths (path,size,hash) values (?,?,?)', (cand,size,hash))
+                dirty = True
+            if (cnt % int(cfg['report_count'])) == 0:
+                logmsg("{} files hashed, {} optimised, {} known, {} new path, {} candidates, {} duplicates ..".format(cnt, opt, knw, mov, can, dup))
+            if dirty and (cnt % 100) == 0:
+                db.commit()
+                dirty = False
+if dirty:
+    db.commit()
+    dirty = False
+logmsg("hashing complete after {} files".format(cnt))
+
+# Any remaining paths in the path to hash table are unvisited files, so no longer exist
+# print report on files and faces being removed, then remove them
+logmsg("{} files no longer present, cleaning up database".format(len(pth)))
+print "File -> [face(s)] removed in this run:"
 for path in pth:
-    print "{} -> {}".format(path, pth[path])
-print "Candidate image files"
-for cand in candidates:
-    print cand
+    cur.execute('SELECT l.label from file_paths as p, face_labels as l, face_groups as g, face_data as d where' +
+            ' p.path = ? and p.hash = d.hash and d.grp = g.grp and g.label = l.label', (path,))
+    print "\t{} -> {}".format(path, list(cur))
+    cur.execute('DELETE FROM file_paths where path = ?', (path,))
+    dirty = True
+if dirty:
+    db.commit()
+    dirty = False
 
-db.commit()
+# Finally - having reduced our workload as as far as possible, the fun stuff - face detection & recognition!
+# Load the face vector weights
+cur.execute('SELECT pickled from face_weights')
+weights = pickle.loads(cur.fetchone()[0])
+
+# Load the existing faces and average each group if required
+logmsg("loading groups and averaging faces..")
+groups = {}
+fcs = 0
+cur.execute('SELECT grp, pickled, label from face_groups')
+for row in cur:
+    grp = row[0]
+    avg = []
+    # Use the average, or..
+    if row[1]:
+        avg = pickle.loads(row[1])
+    # Generate from the group content
+    else:
+        cnt = 1.0
+        c2 = db.cursor()
+        c2.execute('SELECT pickled from face_data where grp = ?', (grp,))
+        for r2 in c2:
+            fcs += 1
+            enc = pickle.loads(r2[0])
+            if len(avg) == 0:
+                avg = enc
+                continue
+            for i in range(0,len(enc)):
+                avg[i] = (cnt-1)/cnt * avg[i] + 1/cnt * enc[i]
+            cnt += 1.0
+        c2.execute('UPDATE face_groups set pickled = ? where grp = ?', (pickle.dumps(avg), grp))
+        dirty = True
+        logmsg("{}: averaged faces for label {}".format(grp, row[2]))
+    if len(avg)>0:
+        groups[grp] = (avg,row[2])
+    else:
+        logerr("group {} has no faces, ignoring it".format(grp))
+if dirty:
+    db.commit()
+    dirty = False
+logmsg("{} groups from {} faces".format(len(groups),fcs))
+
+# Work through the candidate hash/file list...
+logmsg("checking {} candidate files to find new faces..".format(len(candidates)))
+print "File -> [face(s)] matched during this run:"
+cnt = 0
+fcs = 0
+unk = 0
+thresh = float(cfg['threshold'])
+for hash in candidates:
+    # face_detection script here..
+    cnt += 1
+    f = candidates[hash]
+    try:
+        # Load as image data
+        pil1 = Image.open(f)
+        try:
+            exif = dict(pil1._getexif().items())
+            #logmsg("{}: orientation {}".format(f, exif[274]))
+            if exif[274] == 3:
+                pil1 = pil1.rotate(180, expand=True)
+            elif exif[274] == 6:
+                pil1 = pil1.rotate(270, expand=True)
+            elif exif[274] == 8:
+                pil1 = pil1.rotate(90, expand=True)
+        except (AttributeError, KeyError, IndexError), e:
+            logmsg("{}: exif issue {}".format(f,e))
+            pass
+        # Resize to sane size for processing, preserve aspect ratio
+        scale = 600.0 / pil1.height
+        pil2 = pil1.resize(((int)(scale * pil1.width), (int)(scale * pil1.height)))
+        # Convert to numpy array for face_recognition
+        image2 = numpy.array(pil2)
+        # Use HOG engine for speed, upsample twice to find smaller faces
+        faces = face_recognition.face_locations(image2, number_of_times_to_upsample=2, model="hog")
+        if len(faces) > 0:
+            logmsg("{}: HOG found {} face(s)".format(f, len(faces)))
+        # Now try CNN engine for accuracy, no upsampling, if nothing found by HOG
+        else:
+            faces = face_recognition.face_locations(image2, number_of_times_to_upsample=0, model="cnn")
+            if len(faces) > 0:
+                logmsg("{}: CNN found {} face(s)".format(f, len(faces)))
+        # No faces, next file..
+        if len(faces) == 0:
+            cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
+            dirty = True
+            continue
+        fcs += len(faces)
+        # Re-scale locations to use full size image for extraction
+        image1 = numpy.array(pil1)
+        for i in range(0,len(faces)):
+            (top, right, bottom, left) = faces[i]
+            faces[i] = ((int)(top/scale),(int)(right/scale),(int)(bottom/scale),(int)(left/scale))
+            logmsg("{}: face @ {},{},{},{}".format(f, faces[i][3], faces[i][0], faces[i][1], faces[i][2]))
+        # Match against all groups to find closest, or none
+        encs = face_recognition.face_encodings(image1, faces)
+        for i in range(0,len(faces)):
+            loc = faces[i]
+            enc = encs[i]
+            lgrp = None
+            ldst = thresh
+            for grp in groups:
+                avg = groups[grp][0]
+                # Stolen from: https://stackoverflow.com/questions/8860850/euclidean-distance-with-weights
+                d = enc - avg
+                dist = math.sqrt((weights*d*d).sum())
+                if dist < ldst:
+                    ldst = dist
+                    lgrp = grp
+            if lgrp:
+                # Found an existing group, pop it in
+                data = loc + (pickle.dumps(enc),hash,lgrp)
+                cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
+                cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
+                dirty = True
+                logmsg("{}: added to group {}".format(f, lgrp))
+                print "\t{} -> {}".format(f,groups[lgrp][1])
+            else:
+                # New group required
+                lgrp = len(groups)
+                groups[lgrp] = (enc,cfg['unknown'])
+                cur.execute('INSERT INTO face_groups (grp, pickled, label) values (?,?,?)', (lgrp, pickle.dumps(enc), cfg['unknown']))
+                data = loc + (pickle.dumps(enc),hash,lgrp)
+                cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
+                dirty = True
+                logmsg("{}: created new group {}".format(f, lgrp))
+                print "\t{} -> {}".format(f,cfg['unknown'])
+
+    except Exception, e:
+        # This is used to skip anything not an image.
+        # Image.open will generate an exception if it cannot open a file.
+        # Warning, this will hide other errors as well.
+        logmsg("{}: processing issue {}".format(f,e))
+        pass
+    if dirty and (cnt % 100) == 0:
+        db.commit()
+        dirty = False
+    if (cnt % int(cfg['report_count'])) == 0:
+        logmsg("{} candidates checked, {} faces found, {} unknown..".format(cnt, fcs, unk))
+
+logmsg("stopping");
+if dirty:
+    db.commit()
 db.close()
