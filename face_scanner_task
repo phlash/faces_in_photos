@@ -51,6 +51,7 @@ def logerr(msg):
     print msg
     syslog.syslog(syslog.LOG_ERR, msg)
 
+logmsg("starting..")
 
 # Open the DB
 if not os.path.isfile(cfg['dbfile']):
@@ -59,6 +60,11 @@ if not os.path.isfile(cfg['dbfile']):
 db = sqlite3.connect(cfg['dbfile'])
 cur = db.cursor()
 cur.execute('PRAGMA foreign_keys = ON')
+
+# Apply config overrides from DB (if any)
+cur.execute('SELECT key, value from face_scanner_config')
+for row in cur:
+    cfg[row[0].strip()] = row[1].strip()
 
 # Load existing hashes into forward and reverse dictionaries
 logmsg("loading existing hashes & candidates..")
@@ -286,8 +292,6 @@ for hash in candidates:
                 # Found an existing group, pop it in
                 data = loc + (pickle.dumps(enc),hash,lgrp)
                 cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
-                cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
-                dirty = True
                 logmsg("{}: added to group {}".format(f, lgrp))
                 print "\t{} -> {}".format(f,groups[lgrp][1])
             else:
@@ -297,7 +301,6 @@ for hash in candidates:
                 cur.execute('INSERT INTO face_groups (grp, pickled, label) values (?,?,?)', (lgrp, pickle.dumps(enc), cfg['unknown']))
                 data = loc + (pickle.dumps(enc),hash,lgrp)
                 cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
-                dirty = True
                 logmsg("{}: created new group {}".format(f, lgrp))
                 print "\t{} -> {}".format(f,cfg['unknown'])
 
@@ -307,7 +310,9 @@ for hash in candidates:
         # Warning, this will hide other errors as well.
         logmsg("{}: processing issue {}".format(f,e))
         pass
-    if dirty and (cnt % 100) == 0:
+    cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
+    dirty = True
+    if (cnt % 100) == 0:
         db.commit()
         dirty = False
     if (cnt % int(cfg['report_count'])) == 0:

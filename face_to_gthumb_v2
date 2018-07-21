@@ -1,0 +1,61 @@
+#! /usr/bin/env python
+
+import os, sys
+from pysqlite2 import dbapi2 as sqlite3
+import xml.etree.ElementTree as et
+
+# Open the DB
+dbfile = 'faces.db'
+if len(sys.argv)>1:
+    dbfile = sys.argv[1]
+if not os.path.isfile(dbfile):
+    print "No such file: {}".format(dbfile)
+    sys.exit(1)
+db = sqlite3.connect(dbfile)
+cur = db.cursor()
+
+# Load labels..
+cur.execute('SELECT label from face_labels')
+labs = []
+for row in cur:
+    lab = str(row[0])
+    labs.append(lab)
+
+# Ensure there is a catalog file for each human
+ncnt = 0
+ucnt = 0
+for lab in labs:
+    catfile = os.environ['HOME'] + '/.local/share/gthumb/catalogs/' + lab + '.catalog'
+    tree = None
+    fils = None
+    if os.path.isfile(catfile):
+        # open existing catalog, remove files
+        tree = et.parse(catfile)
+        root = tree.getroot()
+        fils = root.find('files')
+        root.remove(fils)
+        fils = et.SubElement(root, 'files')
+        ucnt += 1
+    else:
+        # Making a new catalog...
+        root = et.Element('catalog')
+        root.set('version', '1.0')
+        tree = et.ElementTree(root)
+        name = et.SubElement(root, 'name')
+        name.text = lab
+        fils = et.SubElement(root, 'files')
+        ncnt += 1
+    # Put in the files..
+    fcnt = 0
+    cur.execute('SELECT path from file_paths p, face_data d, face_groups g where p.hash = d.hash and d.grp = g.grp and g.label = ?', (lab,))
+    for row in cur:
+        path = str(row[0])
+        fil = et.SubElement(fils, 'file')
+        fil.set('uri', 'file://' + path)
+        fcnt += 1
+    # Save the catalog
+    tree.write(catfile, encoding="UTF-8", xml_declaration=True)
+    print "Saved {} files for human {}".format(fcnt, lab)
+
+print "Updated {} catalogs, created {}".format(ucnt, ncnt)
+db.close()

@@ -19,6 +19,10 @@ CREATE INDEX IF NOT EXISTS idx_tag_groups_human on tag_groups (human);
 -- v2 after actually stopping to think
 --
 PRAGMA foreign_keys = ON;
+--
+-- scanner task configuration (highest priority, see also cmd line, /etc/defaults/face_scanner)
+CREATE TABLE IF NOT EXISTS face_scanner_config(key not null, value);
+--
 -- where we go looking for image files..
 CREATE TABLE IF NOT EXISTS source_paths (path not null);
 --
