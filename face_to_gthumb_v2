@@ -14,18 +14,21 @@ if not os.path.isfile(dbfile):
 db = sqlite3.connect(dbfile)
 cur = db.cursor()
 
-# Load labels..
-cur.execute('SELECT label from face_labels')
-labs = []
+# Load labels and groups
+print "Loading labels & groups"
+cur.execute('SELECT label, grp from face_groups ORDER BY label, grp')
+cats = []
 for row in cur:
-    lab = str(row[0])
-    labs.append(lab)
+    cat = (str(row[0]), row[1])
+    cats.append(cat)
 
-# Ensure there is a catalog file for each human
+# Ensure there is a catalog file for each label & group
+print "Building catalog files.."
 ncnt = 0
 ucnt = 0
-for lab in labs:
-    catfile = os.environ['HOME'] + '/.local/share/gthumb/catalogs/' + lab + '.catalog'
+for cat in cats:
+    catname = cat[0] + '_' + str(cat[1])
+    catfile = os.environ['HOME'] + '/.local/share/gthumb/catalogs/' + catname + '.catalog'
     tree = None
     fils = None
     if os.path.isfile(catfile):
@@ -42,12 +45,12 @@ for lab in labs:
         root.set('version', '1.0')
         tree = et.ElementTree(root)
         name = et.SubElement(root, 'name')
-        name.text = lab
+        name.text = catname
         fils = et.SubElement(root, 'files')
         ncnt += 1
     # Put in the files..
     fcnt = 0
-    cur.execute('SELECT path from file_paths p, face_data d, face_groups g where p.hash = d.hash and d.grp = g.grp and g.label = ?', (lab,))
+    cur.execute('SELECT DISTINCT(path) from file_paths p, face_data d where p.hash = d.hash and d.grp = ?', (cat[1],))
     for row in cur:
         path = str(row[0])
         fil = et.SubElement(fils, 'file')
@@ -55,7 +58,7 @@ for lab in labs:
         fcnt += 1
     # Save the catalog
     tree.write(catfile, encoding="UTF-8", xml_declaration=True)
-    print "Saved {} files for human {}".format(fcnt, lab)
+    print "Saved {} files for human {} in group {}".format(fcnt, cat[0], cat[1])
 
 print "Updated {} catalogs, created {}".format(ucnt, ncnt)
 db.close()

@@ -15,12 +15,13 @@ from PIL import Image, ExifTags
 import face_recognition
 
 # Well-known configuration file location
-cfgfile = '/etc/defaults/face_scanner'
+cfgfile = '/etc/default/face_scanner'
 
 # Default configuration values
 cfg = {}
 cfg['dbfile'] = '/etc/face_scanner.db'
 cfg['verbose'] = False
+cfg['syslog'] = True
 cfg['report_count'] = 1000
 cfg['threshold'] = 0.3
 cfg['unknown'] = '_Unknown_'
@@ -40,16 +41,20 @@ if len(sys.argv)>1:
         cfg[k.strip()] = v.strip()
 
 # Logger
-syslog.openlog('face_scanner', syslog.LOG_PID)
-syslog.syslog(syslog.LOG_INFO, 'starting up..')
+if cfg['syslog']:
+    syslog.openlog('face_scanner', syslog.LOG_PID)
+    syslog.syslog(syslog.LOG_INFO, 'starting up..')
+
 def logmsg(msg):
     if cfg['verbose']:
         print msg
-    syslog.syslog(syslog.LOG_INFO, msg)
+    if cfg['syslog']:
+        syslog.syslog(syslog.LOG_INFO, msg)
 
 def logerr(msg):
     print msg
-    syslog.syslog(syslog.LOG_ERR, msg)
+    if cfg['syslog']:
+        syslog.syslog(syslog.LOG_ERR, msg)
 
 logmsg("starting..")
 
@@ -65,6 +70,11 @@ cur.execute('PRAGMA foreign_keys = ON')
 cur.execute('SELECT key, value from face_scanner_config')
 for row in cur:
     cfg[row[0].strip()] = row[1].strip()
+
+# Dump final config
+if cfg['verbose']:
+    for k in cfg:
+        logmsg("config: {} = {}".format(k, cfg[k]))
 
 # Load existing hashes into forward and reverse dictionaries
 logmsg("loading existing hashes & candidates..")
