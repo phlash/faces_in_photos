@@ -3,32 +3,39 @@
 import os, sys, pickle, math
 from pysqlite2 import dbapi2 as sqlite3
 
-# Open the DB
+# Set initial database file name
 dbfile = 'faces.db'
-if len(sys.argv)>1:
-    dbfile = sys.argv[1]
+# Set initial group to work on (my Picasa load produced 190 groups)
+initgr = 190
+# Set initial grouping threshold
+thresh = 0.3
+# Set default write to DB flag
+write = False
+skip = False
+for arg in range(1,len(sys.argv)):
+    if skip:
+        skip = False
+    elif sys.argv[arg].startswith('-d'):
+        skip = True
+        dbfile = sys.argv[arg+1]
+    elif sys.argv[arg].startswith('-i'):
+        skip = True
+        initgr = int(sys.argv[arg+1])
+    elif sys.argv[arg].startswith('-t'):
+        skip = True
+        thresh = float(sys.argv[arg+1])
+    elif sys.argv[arg].startswith('-w'):
+        write = True
+
+print "Grouping faces in {} from group {} at threshold {}, write to DB {}".format(dbfile, initgr, thresh, write)
+
+# Open the DB
 if not os.path.isfile(dbfile):
     print "No such file: {}".format(dbfile)
     sys.exit(1)
 db = sqlite3.connect(dbfile)
 cur = db.cursor()
-
-# Set initial group to work on (my Picasa load produced 190 groups)
-initgr = 190
-if len(sys.argv)>2:
-    initgr = int(sys.argv[2])
-
-# Set grouping threshold
-thresh = 0.3
-if len(sys.argv)>3:
-    thresh = float(sys.argv[3])
-
-# Set write to DB flag
-write = False
-if len(sys.argv)>4:
-    write = True
-
-print "Grouping faces in {} from group {} at threshold {}, write to DB {}".format(dbfile, initgr, thresh, write)
+cur.execute('PRAGMA foreign_keys = ON')
 
 # Load 'em in..
 print "Loading face weights"
@@ -97,9 +104,18 @@ for grp in gstat:
     print "{}, {}".format(grp, gstat[grp])
 
 if write:
+    # Nuke existing relationships
+    print "DBWRITE: clearing existing groupings.."
+    regroup = '_REGROUP_'
+    cur.execute('INSERT OR IGNORE INTO face_labels (label) values (?)', (regroup,))
+    cur.execute('INSERT OR IGNORE INTO face_groups (grp,label,pickled) values(?,?,?)', (-1,regroup,''))
+    cur.execute('UPDATE face_data set grp = -1 where grp >= ?', (initgr,))
+    cur.execute('DELETE FROM face_groups where grp >= ?', (initgr,))
+    db.commit()
     # Update groups with averaged face data
     print "DBWRITE: updating group averages.."
     for grp in groups:
+        (cnt, avg) = groups[grp]
         cur.execute('SELECT grp from face_groups where grp = ?', (grp,))
         row = cur.fetchone()
         if row:
@@ -112,6 +128,9 @@ if write:
     for key in gfaces:
         data = (gfaces[key],) + key
         cur.execute('UPDATE face_data set grp = ? where hash = ? and top = ? and left = ? and bottom = ? and right = ?', data)
+    print "DBWRITE: tidying up temporary label.."
+    cur.execute('DELETE FROM face_groups where grp = -1')
+    cur.execute('DELETE FROM face_labels where label = ?', (regroup,))
     db.commit()
 db.close()
 
