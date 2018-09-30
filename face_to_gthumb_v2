@@ -13,6 +13,7 @@ if not os.path.isfile(dbfile):
     sys.exit(1)
 db = sqlite3.connect(dbfile)
 cur = db.cursor()
+cur.execute('PRAGMA foreign_keys = ON')
 
 # Load labels and groups
 print "Loading labels & groups"
@@ -21,6 +22,20 @@ cats = []
 for row in cur:
     cat = (str(row[0]), row[1])
     cats.append(cat)
+
+# Load face data
+print "Loading face groupings"
+cur.execute('SELECT grp, hash from face_data')
+grps = {}
+for row in cur:
+    if row[0] in grps:
+        grp = grps[row[0]]
+    else:
+        grp = []
+        grps[row[0]] = grp
+    if not (row[1] in grp):
+        grp.append(row[1])
+print "\t{} groups loaded".format(len(grps))
 
 # Ensure there is a catalog file for each label & group
 print "Building catalog files.."
@@ -50,15 +65,17 @@ for cat in cats:
         ncnt += 1
     # Put in the files..
     fcnt = 0
-    cur.execute('SELECT DISTINCT(path) from file_paths p, face_data d where p.hash = d.hash and d.grp = ?', (cat[1],))
-    for row in cur:
-        path = str(row[0])
-        fil = et.SubElement(fils, 'file')
-        fil.set('uri', 'file://' + path)
-        fcnt += 1
+    grp = grps[cat[1]]
+    for hsh in grp:
+        cur.execute('SELECT path from file_paths where hash = ?', (hsh,))
+        for row in cur:
+            path = str(row[0])
+            fil = et.SubElement(fils, 'file')
+            fil.set('uri', 'file://' + path)
+            fcnt += 1
     # Save the catalog
     tree.write(catfile, encoding="UTF-8", xml_declaration=True)
-    print "Saved {} files for human {} in group {}".format(fcnt, cat[0], cat[1])
+    print "Saved {} files for label {} in group {}".format(fcnt, cat[0], cat[1])
 
 print "Updated {} catalogs, created {}".format(ucnt, ncnt)
 db.close()

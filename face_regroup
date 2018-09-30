@@ -15,6 +15,9 @@ skip = False
 for arg in range(1,len(sys.argv)):
     if skip:
         skip = False
+    elif sys.argv[arg].startswith('-h'):
+        print "usage: face_regroup [-d <database def:faces.db>] [-i <initgroup def:190>] [-t <threshold def:0.3>] [-w (write)]"
+        sys.exit(0)
     elif sys.argv[arg].startswith('-d'):
         skip = True
         dbfile = sys.argv[arg+1]
