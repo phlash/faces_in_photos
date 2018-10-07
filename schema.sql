@@ -4,6 +4,11 @@
 -- sqlite> .exit
 PRAGMA foreign_keys = ON;
 --
+-- Picasa labelled face data
+CREATE TABLE IF NOT EXISTS face_picasa(path,left,top,right,bottom,hash,label);
+CREATE INDEX IF NOT EXISTS idx_face_picasa_path on face_picasa (path);
+CREATE INDEX IF NOT EXISTS idx_face_picasa_ltrb on face_picasa (left, top, right, bottom);
+--
 -- scanner task configuration (highest priority, see also cmd line, /etc/defaults/face_scanner)
 CREATE TABLE IF NOT EXISTS face_scanner_config(key not null, value);
 --

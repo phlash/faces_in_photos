@@ -266,11 +266,12 @@ for hash in candidates:
         faces = face_recognition.face_locations(image2, number_of_times_to_upsample=2, model="hog")
         if len(faces) > 0:
             logmsg("{}: HOG found {} face(s)".format(f, len(faces)))
-        # Now try CNN engine for accuracy, no upsampling, if nothing found by HOG
-        else:
-            faces = face_recognition.face_locations(image2, number_of_times_to_upsample=0, model="cnn")
-            if len(faces) > 0:
-                logmsg("{}: CNN found {} face(s)".format(f, len(faces)))
+        # Now try CNN engine for accuracy, no upsampling, if nothing found by HOG or config flag set
+        if (len(faces) == 0) or ("useCNN" in cfg):
+            cnn = face_recognition.face_locations(image2, number_of_times_to_upsample=0, model="cnn")
+            if len(cnn) > 0:
+                logmsg("{}: CNN found {} face(s)".format(f, len(cnn)))
+                faces += cnn
         # No faces, next file..
         if len(faces) == 0:
             cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))

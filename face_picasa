@@ -64,7 +64,7 @@ for ini in inis:
         else:
             name = None
         data = ltrb + (hash,name,)
-        cur.execute('INSERT INTO faces(path,left,top,right,bottom,hash,human) values (?,?,?,?,?,?,?)', data)
+        cur.execute('INSERT INTO face_picasa(path,left,top,right,bottom,hash,label) values (?,?,?,?,?,?,?)', data)
         print "face @ {} = {}/{}".format(ltrb,hash,name)
     cur.close()
     db.commit()
