@@ -271,7 +271,17 @@ for hash in candidates:
             cnn = face_recognition.face_locations(image2, number_of_times_to_upsample=0, model="cnn")
             if len(cnn) > 0:
                 logmsg("{}: CNN found {} face(s)".format(f, len(cnn)))
-                faces += cnn
+                # merge new faces (no overlap) with HOG
+                mrg = 0
+                for cnf in cnn:
+                    ovr = False
+                    for hog in faces:
+                        if (cnf[0]<hog[2]) and (cnf[2]>hog[0]) and (cnf[1]>hog[3]) and (cnf[3]<hog[1]):
+                            ovr = True
+                    if not ovr:
+                        faces.append(cnf)
+                        mrg += 1
+                logmsg("{}: merged {} CNN faces".format(f, mrg))
         # No faces, next file..
         if len(faces) == 0:
             cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
@@ -300,20 +310,26 @@ for hash in candidates:
                     ldst = dist
                     lgrp = grp
             if lgrp:
-                # Found an existing group, pop it in
+                # Found an existing group, pop it in, update average
                 data = loc + (pickle.dumps(enc),hash,lgrp)
                 cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
+                avg = groups[lgrp][0]
+                for j in range(0,len(avg)):
+                    avg[j] = 0.75*avg[j] + 0.25*enc[j]
+                groups[lgrp] = (avg,groups[lgrp][1])
+                cur.execute('UPDATE face_groups set pickled = ? where grp = ?', (pickle.dumps(avg), lgrp))
                 logmsg("{}: added to group {}".format(f, lgrp))
                 print "\t{} -> {}".format(f,groups[lgrp][1])
             else:
                 # New group required
                 lgrp = len(groups)
                 groups[lgrp] = (enc,cfg['unknown'])
+                cur.execute('INSERT OR IGNORE INTO face_labels (label) values (?)', (cfg['unknown'],))
                 cur.execute('INSERT INTO face_groups (grp, pickled, label) values (?,?,?)', (lgrp, pickle.dumps(enc), cfg['unknown']))
                 data = loc + (pickle.dumps(enc),hash,lgrp)
                 cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
                 logmsg("{}: created new group {}".format(f, lgrp))
-                print "\t{} -> {}".format(f,cfg['unknown'])
+                print "\t{} -> {}".format(f,groups[lgrp][1])
 
     except Exception, e:
         # This is used to skip anything not an image.
@@ -326,6 +342,7 @@ for hash in candidates:
     if (cnt % 100) == 0:
         db.commit()
         dirty = False
+        logmsg("-- commited DB")
     if (cnt % int(cfg['report_count'])) == 0:
         logmsg("{} candidates checked, {} faces found, {} unknown..".format(cnt, fcs, unk))
 
