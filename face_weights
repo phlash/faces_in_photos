@@ -1,0 +1,84 @@
+#! /usr/bin/env python
+
+import os, sys, pickle, math, numpy
+from pysqlite2 import dbapi2 as sqlite3
+import face_recognition
+
+# Open DB
+dbf = 'faces.db'
+if len(sys.argv)>1:
+    dbf = sys.argv[1]
+if not os.path.exists(dbf):
+    print "No such database: {}".format(dbf)
+    sys.exit(1)
+print "opening database: {}".format(dbf)
+db = sqlite3.connect(dbf)
+cur = db.cursor()
+
+# Work through faces carved from Picasa..
+ptf = {}
+fcnt = 0
+cur.execute('SELECT left,top,right,bottom,path from face_picasa')
+for row in cur:
+    (left,top,right,bottom,path) = row
+    if path in ptf:
+        faces = ptf[path]
+    else:
+        faces = []
+        ptf[path] = faces
+    faces.append((top,right,bottom,left))
+    fcnt += 1
+print "{} faces in {} images".format(fcnt, len(ptf))
+
+print "loading images.."
+lcnt = 0
+fcnt = 0
+allencs = []
+for path in ptf:
+    faces = ptf[path]
+    try:
+        img = face_recognition.load_image_file(path)
+        encs = face_recognition.face_encodings(img, faces)
+        allencs += encs
+        fcnt += len(encs)
+        if (fcnt >= lcnt+10):
+            print "loaded: {}".format(fcnt)
+            lcnt = fcnt
+    except Exception, e:
+        print "unable to load: {}: {}".format(path, e)
+        pass
+
+print "averaging..."
+avg = []
+cnt = 0.0
+for enc in allencs:
+    if len(avg)==0:
+        avg = enc
+    else:
+        for i in range(0,len(enc)):
+            avg[i] = (cnt-1)/cnt * avg[i] + 1/cnt * enc[i]
+    cnt += 1.0
+
+print "measuring variance..."
+vai = []
+cnt = 0.0
+for enc in allencs:
+    if len(vai)==0:
+        vai = [0] * len(enc)
+    else:
+        for i in range(0,len(enc)):
+            v = (enc[i]-avg[i])**2
+            vai[i] = (cnt-1)/cnt * vai[i] + 1/cnt * v
+    cnt += 1.0
+tot = 0.0
+for i in range(0,len(vai)):
+    vai[i] = math.sqrt(vai[i])
+    tot += vai[i]
+scale = float(len(vai))/tot
+print "sum of variances: {}, scale: {}".format(tot, scale)
+for i in range(0,len(vai)):
+    vai[i] *= scale
+cur.execute('DELETE FROM face_weights')
+cur.execute('INSERT INTO face_weights (pickled) values (?)', (pickle.dumps(numpy.asarray(vai)),))
+db.commit()
+db.close()
