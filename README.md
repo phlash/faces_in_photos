@@ -4,6 +4,16 @@ some scripts to find and tag faces in photograph image files, 'cause Picasa is d
 ## Blogged
 https://ashbysoft.com/wiki/Face%20Recognition
 
+## What do all the scripts do?
+
+This stuff:
+* schema.sql: SQLite3 database schema, use this to create an empty db
+* face_picasa: loads face_picasa table with data from .picasa.ini files, use with find like this:
+  % find /my/photo/store -name .picasa.ini -print0 |xargs -0 ./face_picasa -d /my/database.db
+* face_weights: generates facial vector weights from loaded picasa data and image files
+* face_scanner_task: scans specified folder path(s), detects new faces and attempts to match with picasa data & labelled groups
+* face_regroup: re-runs matching to labelled groups with specified parameters (threshold distance)
+
 ## Proper design time
 
 As per my blog, it's time to think a little on information flow, integration points and process life cycles:
