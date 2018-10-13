@@ -65,7 +65,10 @@ for cat in cats:
         ncnt += 1
     # Put in the files..
     fcnt = 0
-    grp = grps[cat[1]]
+    if cat[1] in grps:
+        grp = grps[cat[1]]
+    else:
+        grp = []
     for hsh in grp:
         cur.execute('SELECT path from file_paths where hash = ?', (hsh,))
         for row in cur:

@@ -70,7 +70,8 @@ gstat = {}
 tot = 0
 mat = 0
 new = 0
-cur.execute('SELECT pickled, hash, top, left, bottom, right from face_data where grp >= ?', (initgr,))
+# include group 0, we might match them elsewhere..
+cur.execute('SELECT pickled, hash, top, left, bottom, right from face_data where (grp=0) or (grp >= ?)', (initgr,))
 for row in cur:
     enc = pickle.loads(row[0])
     key = (row[1],row[2],row[3],row[4],row[5])
@@ -126,7 +127,7 @@ if write:
             cur.execute('UPDATE face_groups set pickled = ? where grp = ?', (pickle.dumps(avg),grp))
         else:
             # New group, map to Unknown face label
-            cur.execute('INSERT into face_groups (grp, pickled, label) values(?, ?, ?)', (grp, pickle.dumps(avg), '_Unknown_'))
+            cur.execute('INSERT into face_groups (grp, pickled, label) values(?, ?, ?)', (grp, pickle.dumps(avg), '_unknown_'))
     print "DBWRITE: updating face data.."
     for key in gfaces:
         data = (gfaces[key],) + key

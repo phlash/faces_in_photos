@@ -1,0 +1,85 @@
+#! /usr/bin/env python
+
+import os, sys
+from pysqlite2 import dbapi2 as sqlite3
+
+# Open DB
+dbf = 'faces.db'
+inis = sys.argv[1:]
+if len(sys.argv)>1:
+    dbf = sys.argv[1]
+if not os.path.exists(dbf):
+    print "No such database: {}".format(dbf)
+    sys.exit(1)
+print "opening database: {}".format(dbf)
+db = sqlite3.connect(dbf)
+cur = db.cursor()
+cur.execute('PRAGMA foreign_keys = ON')
+
+# Process all face_picasa table data, re-arrange face_groups to match Picasa
+print "loading Picasa data"
+picasa = {}
+cur.execute('SELECT path,left,top,right,bottom,hash,label from face_picasa order by label,hash')
+for row in cur:
+    (path,left,top,right,bottom,hash,label) = row
+    # map blank labels to _unknown_
+    if (not label) or len(label) == 0:
+        label = '_unknown_'
+    if label in picasa:
+        imgmap = picasa[label]
+    else:
+        imgmap = {}
+        picasa[label] = imgmap
+    if hash in imgmap:
+        imglst = imgmap[hash]
+    else:
+        imglst = []
+        imgmap[hash] = imglst
+    imglst.append((path,left,top,right,bottom))
+
+print "loading file data"
+cur.execute('SELECT path,hash from file_paths')
+pth = {}
+for row in cur:
+    (path,hash) = row
+    pth[path] = hash
+
+print "removing existing groups and creating _unknown_ at grp 0"
+cur.execute('INSERT OR IGNORE INTO face_labels (label) values(\'_unknown_\')')
+cur.execute('INSERT OR IGNORE INTO face_groups (grp,label) values(0, \'_unknown_\')')
+cur.execute('UPDATE face_groups set label=\'_unknown_\' where grp=0')
+cur.execute('UPDATE face_data set grp=0')
+cur.execute('DELETE from face_groups where grp!=0')
+cur.execute('DELETE from face_labels where label!=\'_unknown_\'')
+
+print "creating labels & groups from Picasa data"
+grp = 0
+mis = 0
+hit = 0
+for label in picasa:
+    imgmap = picasa[label]
+    if '_unknown_' == label:
+        continue;
+    cur.execute('INSERT INTO face_labels (label) values(?)', (label,))
+    for hash in imgmap:
+        imglst = imgmap[hash]
+        grp += 1
+        cur.execute('INSERT INTO face_groups (grp,label) values(?,?)', (grp,label))
+        for pltrb in imglst:
+            if pltrb[0] in pth:
+                # find overlapping rectangles in same image (hash), assign to Picasa group & label
+                vals = (grp,pth[pltrb[0]],pltrb[1],pltrb[2],pltrb[3],pltrb[4])
+                cur.execute('UPDATE face_data set grp=? where hash=? and right>? and bottom>? and left<? and top<?', vals)
+                if 0==cur.rowcount:
+                    mis += 1
+                else:
+                    hit += 1
+            else:
+                mis += 1
+        if (grp%10)==0:
+            print "processed {} groups".format(grp)
+            db.commit()
+db.commit()
+
+print "done, processed {} images into {} groups and {} labels, missed {} picasa faces".format(hit,grp,len(picasa),mis)
+db.close()
