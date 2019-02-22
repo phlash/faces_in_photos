@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 
 import os, sys, pickle, math, numpy
+from multiprocessing import Pool
 from pysqlite2 import dbapi2 as sqlite3
 import face_recognition
 
@@ -30,23 +31,38 @@ for row in cur:
     fcnt += 1
 print "{} faces in {} images".format(fcnt, len(ptf))
 
+# Use multiprocessing to process images faster
 print "loading images.."
+allencs = []
 lcnt = 0
 fcnt = 0
-allencs = []
-for path in ptf:
-    faces = ptf[path]
+def getencs(_pth, _fce):
     try:
-        img = face_recognition.load_image_file(path)
-        encs = face_recognition.face_encodings(img, faces)
-        allencs += encs
-        fcnt += len(encs)
+        _img = face_recognition.load_image_file(_pth)
+        _enc = face_recognition.face_encodings(_img, _fce)
+        return _enc
+    except Exception, e:
+        print "unable to load: {}: {}".format(_pth, e)
+        pass
+    return None
+
+def encdone(_enc):
+    global allencs
+    global lcnt
+    global fcnt
+    if None != _enc:
+        allencs += _enc
+        fcnt += len(_enc)
         if (fcnt >= lcnt+10):
             print "loaded: {}".format(fcnt)
             lcnt = fcnt
-    except Exception, e:
-        print "unable to load: {}: {}".format(path, e)
-        pass
+
+pool = Pool()   # NB: size defaults to number of cpus
+for path in ptf:
+    faces = ptf[path]
+    pool.apply_async(getencs, (path, faces,), callback=encdone)
+pool.close()
+pool.join()
 
 print "averaging..."
 avg = []

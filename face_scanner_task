@@ -43,7 +43,6 @@ if len(sys.argv)>1:
 # Logger
 if cfg['syslog']:
     syslog.openlog('face_scanner', syslog.LOG_PID)
-    syslog.syslog(syslog.LOG_INFO, 'starting up..')
 
 def logmsg(msg):
     if cfg['verbose']:
@@ -312,7 +311,7 @@ for hash in candidates:
             if lgrp:
                 # Found an existing group, pop it in, update average
                 data = loc + (pickle.dumps(enc),hash,lgrp)
-                cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
+                cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp,inpic) values (?,?,?,?,?,?,?,0)', data)
                 avg = groups[lgrp][0]
                 for j in range(0,len(avg)):
                     avg[j] = 0.75*avg[j] + 0.25*enc[j]
@@ -346,7 +345,7 @@ for hash in candidates:
     if (cnt % int(cfg['report_count'])) == 0:
         logmsg("{} candidates checked, {} faces found, {} unknown..".format(cnt, fcs, unk))
 
-logmsg("stopping");
 if dirty:
     db.commit()
 db.close()
+logmsg("stopped");

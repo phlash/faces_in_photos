@@ -5,32 +5,32 @@ from pysqlite2 import dbapi2 as sqlite3
 
 # Set initial database file name
 dbfile = 'faces.db'
-# Set initial group to work on (my Picasa load produced 190 groups)
-initgr = 190
+# Set initial group to work on (my Picasa load produced 255 groups)
+initgr = 256
 # Set initial grouping threshold
 thresh = 0.3
 # Set default write to DB flag
 write = False
 skip = False
+cthresh = None
+cinitgr = None
 for arg in range(1,len(sys.argv)):
     if skip:
         skip = False
     elif sys.argv[arg].startswith('-h'):
-        print "usage: face_regroup [-d <database def:faces.db>] [-i <initgroup def:190>] [-t <threshold def:0.3>] [-w (write)]"
+        print "usage: face_regroup [-d <database def:faces.db>] [-i <initgroup def:256>] [-t <threshold def:0.3>] [-w (write)]"
         sys.exit(0)
     elif sys.argv[arg].startswith('-d'):
         skip = True
         dbfile = sys.argv[arg+1]
     elif sys.argv[arg].startswith('-i'):
         skip = True
-        initgr = int(sys.argv[arg+1])
+        cinitgr = int(sys.argv[arg+1])
     elif sys.argv[arg].startswith('-t'):
         skip = True
-        thresh = float(sys.argv[arg+1])
+        cthresh = float(sys.argv[arg+1])
     elif sys.argv[arg].startswith('-w'):
         write = True
-
-print "Grouping faces in {} from group {} at threshold {}, write to DB {}".format(dbfile, initgr, thresh, write)
 
 # Open the DB
 if not os.path.isfile(dbfile):
@@ -39,6 +39,22 @@ if not os.path.isfile(dbfile):
 db = sqlite3.connect(dbfile)
 cur = db.cursor()
 cur.execute('PRAGMA foreign_keys = ON')
+
+# Read relevant settings
+cur.execute('SELECT key,value from face_scanner_config')
+for row in cur:
+    if ('threshold' == row[0]):
+        thresh = float(row[1])
+    elif ('initgr' == row[0]):
+        initgr = int(row[1])
+
+# Command line takes precedence
+if cthresh != None:
+    thresh = cthresh
+if cinitgr != None:
+    initgr = cinitgr
+
+print "Grouping faces in {} from group {} at threshold {}, write to DB {}".format(dbfile, initgr, thresh, write)
 
 # Load 'em in..
 print "Loading face weights"
@@ -135,6 +151,9 @@ if write:
     print "DBWRITE: tidying up temporary label.."
     cur.execute('DELETE FROM face_groups where grp = -1')
     cur.execute('DELETE FROM face_labels where label = ?', (regroup,))
+    print "DBWRITE: updating threshold.."
+    cur.execute('INSERT OR IGNORE INTO face_scanner_config(key,value) values(?,?)', ('threshold',str(thresh),))
+    cur.execute('UPDATE face_scanner_config set value=? WHERE key=?', (str(thresh),'threshold',))
     db.commit()
 db.close()
 

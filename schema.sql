@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS face_weights(pickled);
 CREATE TABLE IF NOT EXISTS face_data (
         left not null, top not null, right not null, bottom not null, pickled not null,
         hash references file_hashes(hash) on update restrict on delete restrict not null,
-        grp references face_groups(grp) on update restrict on delete restrict not null
+        grp references face_groups(grp) on update restrict on delete restrict not null,
+        inpic
 );
 CREATE INDEX IF NOT EXISTS idx_face_data_rect on face_data (left, top, right, bottom);
 CREATE INDEX IF NOT EXISTS idx_face_data_hash on face_data (hash);
