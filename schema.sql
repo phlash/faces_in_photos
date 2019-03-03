@@ -10,7 +10,7 @@ CREATE INDEX IF NOT EXISTS idx_face_picasa_path on face_picasa (path);
 CREATE INDEX IF NOT EXISTS idx_face_picasa_ltrb on face_picasa (left, top, right, bottom);
 --
 -- scanner task configuration (highest priority, see also cmd line, /etc/defaults/face_scanner)
-CREATE TABLE IF NOT EXISTS face_scanner_config(key not null, value);
+CREATE TABLE IF NOT EXISTS face_scanner_config(key primary key, value);
 --
 -- where we go looking for image files..
 CREATE TABLE IF NOT EXISTS source_paths (path not null);
