@@ -101,8 +101,6 @@ for label in picasa:
         if (grp%10)==0:
             print "processed {} groups".format(grp)
             db.commit()
-cur.execute('INSERT OR IGNORE INTO face_scanner_config(key,value) values(?,?)', ('initgr',str(grp+1),))
-cur.execute('UPDATE face_scanner_config set value=? WHERE key=?', (str(grp+1), 'initgr',))
 db.commit()
 
 print "done, matched {} picasa faces into {} groups and {} labels, missed {} picasa faces".format(hit,grp,len(picasa),mis)

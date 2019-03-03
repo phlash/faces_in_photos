@@ -5,27 +5,21 @@ from pysqlite2 import dbapi2 as sqlite3
 
 # Set initial database file name
 dbfile = 'faces.db'
-# Set initial group to work on (my Picasa load produced 255 groups)
-initgr = 256
 # Set initial grouping threshold
-thresh = 0.3
+thresh = 0.45
 # Set default write to DB flag
 write = False
 skip = False
 cthresh = None
-cinitgr = None
 for arg in range(1,len(sys.argv)):
     if skip:
         skip = False
     elif sys.argv[arg].startswith('-h'):
-        print "usage: face_regroup [-d <database def:faces.db>] [-i <initgroup def:256>] [-t <threshold def:0.3>] [-w (write)]"
+        print "usage: face_regroup [-d <database def:faces.db>] [-t <threshold def:0.3>] [-w (write)]"
         sys.exit(0)
     elif sys.argv[arg].startswith('-d'):
         skip = True
         dbfile = sys.argv[arg+1]
-    elif sys.argv[arg].startswith('-i'):
-        skip = True
-        cinitgr = int(sys.argv[arg+1])
     elif sys.argv[arg].startswith('-t'):
         skip = True
         cthresh = float(sys.argv[arg+1])
@@ -45,16 +39,12 @@ cur.execute('SELECT key,value from face_scanner_config')
 for row in cur:
     if ('threshold' == row[0]):
         thresh = float(row[1])
-    elif ('initgr' == row[0]):
-        initgr = int(row[1])
 
 # Command line takes precedence
 if cthresh != None:
     thresh = cthresh
-if cinitgr != None:
-    initgr = cinitgr
 
-print "Grouping faces in {} from group {} at threshold {}, write to DB {}".format(dbfile, initgr, thresh, write)
+print "Grouping non-Picasa faces in {} at threshold {}, write to DB {}".format(dbfile, thresh, write)
 
 # Load 'em in..
 print "Loading face weights"
@@ -65,7 +55,7 @@ groups = {}
 maxgrp = 0
 print "Loading Picasa groups and re-averaging.."
 # skip group 0 - it's Picasa's bit bucket
-cur.execute('SELECT grp, pickled from face_data where grp > 0 and grp < ?', (initgr,))
+cur.execute('SELECT grp, pickled from face_data where grp > 0 and inpic = 1')
 for row in cur:
     grp = int(row[0])
     enc = pickle.loads(row[1])
@@ -81,13 +71,14 @@ for row in cur:
         maxgrp = grp
 
 print "Loading other face data and re-grouping.."
+picgrp = maxgrp
 gfaces = {}
 gstat = {}
 tot = 0
 mat = 0
 new = 0
 # include group 0, we might match them elsewhere..
-cur.execute('SELECT pickled, hash, top, left, bottom, right from face_data where (grp=0) or (grp >= ?)', (initgr,))
+cur.execute('SELECT pickled, hash, top, left, bottom, right from face_data where (grp=0) or inpic = 0')
 for row in cur:
     enc = pickle.loads(row[0])
     key = (row[1],row[2],row[3],row[4],row[5])
@@ -119,9 +110,6 @@ for row in cur:
     else:
         gstat[lgrp] = 1
     gfaces[key] = lgrp
-print "Group match stats"
-for grp in gstat:
-    print "{}, {}".format(grp, gstat[grp])
 
 if write:
     # Nuke existing relationships
@@ -129,8 +117,8 @@ if write:
     regroup = '_REGROUP_'
     cur.execute('INSERT OR IGNORE INTO face_labels (label) values (?)', (regroup,))
     cur.execute('INSERT OR IGNORE INTO face_groups (grp,label,pickled) values(?,?,?)', (-1,regroup,''))
-    cur.execute('UPDATE face_data set grp = -1 where grp >= ?', (initgr,))
-    cur.execute('DELETE FROM face_groups where grp >= ?', (initgr,))
+    cur.execute('UPDATE face_data set grp = -1 where inpic = 0')
+    cur.execute('DELETE FROM face_groups where grp > ?', (picgrp,))
     db.commit()
     # Update groups with averaged face data
     print "DBWRITE: updating group averages.."
