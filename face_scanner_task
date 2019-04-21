@@ -132,7 +132,12 @@ for path in src:
             # special check for our own database file.. ignore it!
             if cfg['dbfile'] == cand:
                 continue
-            size = os.stat(cand).st_size
+            size = None
+            try:
+                size = os.stat(cand).st_size
+            except Exception, e:
+                logmsg("failed to stat {}: {}".format(cand, e))
+                continue
             # Optimisation, skip hashing if path and size match, assume we have it
             # NB: We keep file info on everything, incluing non-image files, as this
             # allows us to skip them next time
