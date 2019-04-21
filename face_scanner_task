@@ -125,7 +125,7 @@ dup = 0
 dirty = False
 for path in src:
     logmsg("walking tree from {}".format(path))
-    for root, subs, files in os.walk(path):
+    for root, subs, files in os.walk(path.decode('utf-8')):
         for f in files:
             cnt += 1
             cand = os.path.join(root, f)
