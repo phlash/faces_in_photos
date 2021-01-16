@@ -5,8 +5,11 @@ import sys, os, math, tflit
 from PIL import Image
 import numpy as np
 
+labels = [ "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "dining table", "dog", "horse", "motorbike", "person", "potted plant", "sheep", "sofa", "train", "tv" ]
+ipers = labels.index("person")
+
 # Process an image file
-def process(model, image):
+def process(model, isDeepseg, image):
     # load image from disk.. ensure RGB format
     img = Image.open(image).convert('RGB')
     # resize to model
@@ -29,40 +32,54 @@ def process(model, image):
     hasper = False
     for y in range(0,len(res)):
         for x in range(0,len(res[y])):
-            eb = math.exp(res[y][x][0])
-            ep = math.exp(res[y][x][1])
-            pb = eb/(ep+eb)
-            pp = ep/(ep+eb)
+            isPer = False
+            # Deepseg? or Segm / Google meet?
+            if isDeepseg:
+                maxv = res[y][x][0]
+                mpos = 0
+                for i in range(1,len(res[y][x])):
+                    if res[y][x][i]>maxv:
+                        maxv = res[y][x][i]
+                        mpos = i
+                isPer = (mpos==ipers)
+            else:
+                eb = math.exp(res[y][x][0])
+                ep = math.exp(res[y][x][1])
+                pb = eb/(ep+eb)
+                pp = ep/(ep+eb)
+                isPer = pp>pb
             # drop pixel into image according to type
-            if pp>pb:
+            if isPer:
                 img.putpixel((x,y),0x0000ff)
                 hasper = True
     return (img, hasper)
 
 if __name__ == '__main__':
-    tfmodel = os.getenv('HOME')+'/projects/deepbacksub/models/segm_lite_v509_128x128_opt_float32.tflite'
+    segm = os.getenv('HOME')+'/projects/deepbacksub/models/segm_lite_v509_128x128_opt_float32.tflite'
+    deep = os.getenv('HOME')+'/projects/deepbacksub/models/deeplabv3_257_mv_gpu.tflite'
+    isDeep = False
     images = []
     verbose = False
     arg = 1
     while arg<len(sys.argv):
-        if sys.argv[arg].startswith('-m'):
-            tfmodel = sys.argv[arg+1]
-            arg+=1
+        if sys.argv[arg].startswith('-d'):
+            isDeep = True
         elif sys.argv[arg].startswith('-v'):
             verbose = True
         elif sys.argv[arg].startswith('-h'):
-            print(f'usage: {sys.argv[0]}: [-m <tflite model:{tfmodel}>] [-v(erbose)] <image> ...')
+            print(f'usage: {sys.argv[0]}: [-d (use deepseg)] [-v(erbose)] <image> ...')
             sys.exit(0)
         else:
             images.append(sys.argv[arg])
         arg+=1
     # load the model
-    print('model:',tfmodel)
-    model = tflit.Model(tfmodel)
+    tfmod = deep if isDeep else segm
+    print('model:',tfmod)
+    model = tflit.Model(tfmod)
     # process the images
     for image in images:
         try:
-            (img, hasper) = process(model, image)
+            (img, hasper) = process(model, isDeep, image)
             if verbose:
                 img.show()
             print(hasper, image)
