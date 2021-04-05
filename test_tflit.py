@@ -2,7 +2,7 @@
 # adapted from label_image.py demo, using tflit wrapper for ease of use =)
 
 import sys, os, math, tflit
-from PIL import Image
+from PIL import Image, ImageColor
 import numpy as np
 
 labels = [ "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "dining table", "dog", "horse", "motorbike", "person", "potted plant", "sheep", "sofa", "train", "tv" ]
@@ -30,6 +30,7 @@ def process(model, isDeepseg, image):
     res = np.squeeze(dataout)
     # walk output pixels, find most likely type (background/person)
     hasper = False
+    redpix = ImageColor.getrgb('#ff0000')
     for y in range(0,len(res)):
         for x in range(0,len(res[y])):
             isPer = False
@@ -43,14 +44,15 @@ def process(model, isDeepseg, image):
                         mpos = i
                 isPer = (mpos==ipers)
             else:
-                eb = math.exp(res[y][x][0])
-                ep = math.exp(res[y][x][1])
-                pb = eb/(ep+eb)
-                pp = ep/(ep+eb)
-                isPer = pp>pb
+                #eb = math.exp(res[y][x][0])
+                #ep = math.exp(res[y][x][1])
+                #pb = eb/(ep+eb)
+                #pp = ep/(ep+eb)
+                #isPer = pp>pb
+                isPer = (res[y][x][0]<res[y][x][1])
             # drop pixel into image according to type
             if isPer:
-                img.putpixel((x,y),0x0000ff)
+                img.putpixel((x,y),redpix)
                 hasper = True
     return (img, hasper)
 
