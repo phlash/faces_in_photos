@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 #
 # Scheduled task (use the cron Luke) to find all new / moved / removed image files since last run, and:
 # 1- update database with moved / removed images, write list of moved / removed files and removed faces
@@ -9,8 +9,8 @@
 #
 # New hashes are candidate new images, so try loading and detecting faces..
 
-import os, sys, syslog, hashlib, numpy, pickle, math
-from pysqlite2 import dbapi2 as sqlite3
+import os, sys, syslog, hashlib, numpy, pickle, math, resource, traceback
+import sqlite3
 from PIL import Image, ExifTags
 import face_recognition
 
@@ -46,12 +46,12 @@ if cfg['syslog']:
 
 def logmsg(msg):
     if cfg['verbose']:
-        print msg
+        print(msg)
     if cfg['syslog']:
         syslog.syslog(syslog.LOG_INFO, msg)
 
 def logerr(msg):
-    print msg
+    print(msg)
     if cfg['syslog']:
         syslog.syslog(syslog.LOG_ERR, msg)
 
@@ -62,6 +62,13 @@ if not os.path.isfile(cfg['dbfile']):
     logerr("No such file: {}".format(cfg['dbfile']))
     sys.exit(1)
 db = sqlite3.connect(cfg['dbfile'])
+# do NOT convert to/from unicode by default
+db.text_factory = bytes
+# our custom unicode convertor for row data
+def rowconv(cur, row):
+    # convert bytes => str unless the column name starts with 'pickle' (yuk!)
+    return [(v.decode('utf-8') if (isinstance(v,bytes) and not cur.description[i][0].startswith('pickle')) else v) for i,v in enumerate(row)]
+db.row_factory = rowconv
 cur = db.cursor()
 cur.execute('PRAGMA foreign_keys = ON')
 
@@ -125,7 +132,7 @@ dup = 0
 dirty = False
 for path in src:
     logmsg("walking tree from {}".format(path))
-    for root, subs, files in os.walk(path.decode('utf-8')):
+    for root, subs, files in os.walk(path):
         for f in files:
             cnt += 1
             cand = os.path.join(root, f)
@@ -135,7 +142,7 @@ for path in src:
             size = None
             try:
                 size = os.stat(cand).st_size
-            except Exception, e:
+            except Exception as e:
                 logmsg("failed to stat {}: {}".format(cand, e))
                 continue
             # Optimisation, skip hashing if path and size match, assume we have it
@@ -182,11 +189,12 @@ logmsg("hashing complete after {} files".format(cnt))
 # Any remaining paths in the path to hash table are unvisited files, so no longer exist
 # print report on files and faces being removed, then remove them
 logmsg("{} files no longer present, cleaning up database".format(len(pth)))
-print "File -> [face(s)] removed in this run:"
+print("File -> [face(s)] removed in this run:")
 for path in pth:
     cur.execute('SELECT l.label from file_paths as p, face_labels as l, face_groups as g, face_data as d where' +
             ' p.path = ? and p.hash = d.hash and d.grp = g.grp and g.label = l.label', (path,))
-    print "\t{} -> {}".format(path, list(cur))
+    nams = [x[0] for x in cur]
+    print("\t{} -> {}".format(path, nams))
     cur.execute('DELETE FROM file_paths where path = ?', (path,))
     dirty = True
 if dirty:
@@ -196,7 +204,9 @@ if dirty:
 # Finally - having reduced our workload as as far as possible, the fun stuff - face detection & recognition!
 # Load the face vector weights
 cur.execute('SELECT pickled from face_weights')
-weights = pickle.loads(cur.fetchone()[0])
+# Oh the joy of decoding Python2 pickled numpy arrays:
+# https://docs.python.org/3/library/pickle.html#pickle.Unpickler
+weights = pickle.loads(cur.fetchone()[0],encoding='latin-1')
 
 # Load the existing faces and average each group if required
 logmsg("loading groups and averaging faces..")
@@ -205,10 +215,11 @@ fcs = 0
 cur.execute('SELECT grp, pickled, label from face_groups')
 for row in cur:
     grp = row[0]
+    lab = row[2]
     avg = []
     # Use the average, or..
     if row[1]:
-        avg = pickle.loads(row[1])
+        avg = pickle.loads(row[1],encoding='latin-1')
     # Generate from the group content
     else:
         cnt = 1.0
@@ -216,7 +227,7 @@ for row in cur:
         c2.execute('SELECT pickled from face_data where grp = ?', (grp,))
         for r2 in c2:
             fcs += 1
-            enc = pickle.loads(r2[0])
+            enc = pickle.loads(r2[0],encoding='latin-1')
             if len(avg) == 0:
                 avg = enc
                 continue
@@ -225,11 +236,10 @@ for row in cur:
             cnt += 1.0
         c2.execute('UPDATE face_groups set pickled = ? where grp = ?', (pickle.dumps(avg), grp))
         dirty = True
-        logmsg("{}: averaged faces for label {}".format(grp, row[2]))
-    if len(avg)>0:
-        groups[grp] = (avg,row[2])
-    else:
-        logerr("group {} has no faces, ignoring it".format(grp))
+        logmsg("{}: averaged faces for label {}".format(grp, lab))
+    if len(avg)<=0:
+        logerr("group {} has no faces".format(grp))
+    groups[grp] = (avg,lab)
 if dirty:
     db.commit()
     dirty = False
@@ -237,12 +247,21 @@ logmsg("{} groups from {} faces".format(len(groups),fcs))
 
 # Work through the candidate hash/file list...
 logmsg("checking {} candidate files to find new faces..".format(len(candidates)))
-print "File -> [face(s)] matched during this run:"
+print("File -> [face(s)] matched during this run:")
 cnt = 0
 fcs = 0
 unk = 0
+swp = 0
+rld = False
 thresh = float(cfg['threshold'])
 for hash in candidates:
+    # resource monitoring - if we stat seeing swapping, we re-load to ditch leaked RAM (thanks crashes in dlib!)
+    res = resource.getrusage(resource.RUSAGE_SELF)
+    if res[8] > swp:
+        swp = res[8]
+        logerr("swap increase detected: {}".format(swp))
+        # TODO: rld = True
+        # TODO: break
     # face_detection script here..
     cnt += 1
     f = candidates[hash]
@@ -258,7 +277,7 @@ for hash in candidates:
                 pil1 = pil1.rotate(270, expand=True)
             elif exif[274] == 8:
                 pil1 = pil1.rotate(90, expand=True)
-        except (AttributeError, KeyError, IndexError), e:
+        except (AttributeError, KeyError, IndexError) as e:
             logmsg("{}: exif issue {}".format(f,e))
             pass
         # Resize to sane size for processing, preserve aspect ratio
@@ -271,7 +290,7 @@ for hash in candidates:
         if len(faces) > 0:
             logmsg("{}: HOG found {} face(s)".format(f, len(faces)))
         # Now try CNN engine for accuracy, no upsampling, if nothing found by HOG or config flag set
-        if (len(faces) == 0) or ("useCNN" in cfg):
+        if ((len(faces) == 0) and ("noCNN" not in cfg)) or ("useCNN" in cfg):
             cnn = face_recognition.face_locations(image2, number_of_times_to_upsample=0, model="cnn")
             if len(cnn) > 0:
                 logmsg("{}: CNN found {} face(s)".format(f, len(cnn)))
@@ -307,12 +326,13 @@ for hash in candidates:
             ldst = thresh
             for grp in groups:
                 avg = groups[grp][0]
-                # Stolen from: https://stackoverflow.com/questions/8860850/euclidean-distance-with-weights
-                d = enc - avg
-                dist = math.sqrt((weights*d*d).sum())
-                if dist < ldst:
-                    ldst = dist
-                    lgrp = grp
+                if len(avg)>0:
+                    # Stolen from: https://stackoverflow.com/questions/8860850/euclidean-distance-with-weights
+                    d = enc - avg
+                    dist = math.sqrt((weights*d*d).sum())
+                    if dist < ldst:
+                        ldst = dist
+                        lgrp = grp
             if lgrp:
                 # Found an existing group, pop it in, update average
                 data = loc + (pickle.dumps(enc),hash,lgrp)
@@ -323,7 +343,7 @@ for hash in candidates:
                 groups[lgrp] = (avg,groups[lgrp][1])
                 cur.execute('UPDATE face_groups set pickled = ? where grp = ?', (pickle.dumps(avg), lgrp))
                 logmsg("{}: added to group {}".format(f, lgrp))
-                print "\t{} -> {}".format(f,groups[lgrp][1])
+                print("\t{} -> {}".format(f,groups[lgrp][1]))
             else:
                 # New group required
                 lgrp = len(groups)
@@ -333,13 +353,18 @@ for hash in candidates:
                 data = loc + (pickle.dumps(enc),hash,lgrp)
                 cur.execute('INSERT INTO face_data (top,right,bottom,left,pickled,hash,grp) values (?,?,?,?,?,?,?)', data)
                 logmsg("{}: created new group {}".format(f, lgrp))
-                print "\t{} -> {}".format(f,groups[lgrp][1])
+                print("\t{} -> {}".format(f,groups[lgrp][1]))
 
-    except Exception, e:
+    except Exception as e:
         # This is used to skip anything not an image.
         # Image.open will generate an exception if it cannot open a file.
         # Warning, this will hide other errors as well.
-        logmsg("{}: processing issue {}".format(f,e))
+        err = traceback.format_exc()
+        logmsg("{}: processing issue {}".format(f,err))
+        # Attempt to detect crashes in dlib and reload ourselves ASAP.. before the inevitable SEGV or other fatal problem
+        if "/dlib/" in err:
+            rld = True
+            break
         pass
     cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
     dirty = True
@@ -353,4 +378,8 @@ for hash in candidates:
 if dirty:
     db.commit()
 db.close()
-logmsg("stopped");
+if rld:
+    logmsg("reloading..")
+    os.execv(sys.argv[0], sys.argv)
+else:
+    logmsg("stopped");
