@@ -13,6 +13,7 @@ import os, sys, syslog, hashlib, numpy, pickle, math, resource, traceback
 import sqlite3
 from PIL import Image, ExifTags
 import face_recognition
+import tflit
 
 # Well-known configuration file location
 cfgfile = '/etc/default/face_scanner'
@@ -25,6 +26,7 @@ cfg['syslog'] = True
 cfg['report_count'] = 1000
 cfg['threshold'] = 0.3
 cfg['unknown'] = '_Unknown_'
+cfg['tf_model'] = 'deeplabv3_257_mv_gpu.tflite'
 
 # Apply config overrides (if any)
 if os.path.isfile(cfgfile):
@@ -57,6 +59,42 @@ def logerr(msg):
 
 logmsg("starting..")
 
+# Tensorflow filter
+labels = [ "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "dining table", "dog", "horse", "motorbike", "person", "potted plant", "sheep", "sofa", "train", "tv" ]
+ipers = labels.index("person")
+def tf_model():
+    return tflit.Model(cfg['tf_model'])
+
+def tf_filter(pil, model):
+    # resize to model
+    h = model.input_details[0]['shape'][1]
+    w = model.input_details[0]['shape'][2]
+    img = pil.resize((w, h))
+    # wrap in an outer array for TF
+    datain = numpy.expand_dims(img, axis=0)
+    # map 0-255 rgb into -1>1 floats
+    datain = (numpy.float32(datain) - 127.5)/127.5
+    # set as input to tf
+    model.interpreter.set_tensor(model.input_details[0]['index'], datain)
+    # run the model
+    model.interpreter.invoke()
+    # grab output
+    dataout = model.interpreter.get_tensor(model.output_details[0]['index'])
+    # reduce from nested array (inverse of above)
+    res = numpy.squeeze(dataout)
+    # walk output pixels, if any are most likely a person, return True
+    for y in range(0,len(res)):
+        for x in range(0,len(res[y])):
+            maxv = res[y][x][0]
+            mpos = 0
+            for i in range(1,len(res[y][x])):
+                if res[y][x][i]>maxv:
+                    maxv = res[y][x][i]
+                    mpos = i
+            if mpos==ipers:
+                return True
+    return False
+
 # Open the DB
 if not os.path.isfile(cfg['dbfile']):
     logerr("No such file: {}".format(cfg['dbfile']))
@@ -81,6 +119,10 @@ for row in cur:
 if cfg['verbose']:
     for k in cfg:
         logmsg("config: {} = {}".format(k, cfg[k]))
+
+# Load Tensorflow model
+logmsg('loading tensorflow model: {}'.format(cfg['tf_model']))
+model = tf_model()
 
 # Load existing hashes into forward and reverse dictionaries
 logmsg("loading existing hashes & candidates..")
@@ -262,15 +304,28 @@ for hash in candidates:
         logerr("swap increase detected: {}".format(swp))
         # TODO: rld = True
         # TODO: break
-    # face_detection script here..
+    # log progress..
     cnt += 1
+    if (cnt % 100) == 0:
+        db.commit()
+        dirty = False
+        logmsg("-- commited DB")
+    if (cnt % int(cfg['report_count'])) == 0:
+        logmsg("{} candidates checked, {} faces found, {} unknown..".format(cnt, fcs, unk))
     f = candidates[hash]
     try:
         # Load as image data
         pil1 = Image.open(f)
+        # Skip anything with unusual aspect ratio
+        asr = pil1.width/pil1.height;
+        if asr<0.1 or asr>10:
+            logmsg("{}: skipped, unusual aspect ratio: {}".format(f, asr))
+            cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
+            dirty = True
+            continue
+        # Extract Exif rotation (if any)
         try:
             exif = dict(pil1._getexif().items())
-            #logmsg("{}: orientation {}".format(f, exif[274]))
             if exif[274] == 3:
                 pil1 = pil1.rotate(180, expand=True)
             elif exif[274] == 6:
@@ -278,35 +333,23 @@ for hash in candidates:
             elif exif[274] == 8:
                 pil1 = pil1.rotate(90, expand=True)
         except (AttributeError, KeyError, IndexError) as e:
-            logmsg("{}: exif issue {}".format(f,e))
             pass
-        # Resize to sane size for processing, preserve aspect ratio
-        scale = 600.0 / pil1.height
-        pil2 = pil1.resize(((int)(scale * pil1.width), (int)(scale * pil1.height)))
-        # Convert to numpy array for face_recognition
-        image2 = numpy.array(pil2)
-        # Use HOG engine for speed, upsample twice to find smaller faces
-        faces = face_recognition.face_locations(image2, number_of_times_to_upsample=2, model="hog")
+        # Ensure RGB for remaining processing
+        pil1 = pil1.convert('RGB')
+        faces = []
+        # Pre-filter with Tensorflow
+        if tf_filter(pil1, model):
+            # Resize to sane size for processing, preserve aspect ratio
+            scale = 600.0 / pil1.height
+            pil2 = pil1.resize(((int)(scale * pil1.width), (int)(scale * pil1.height)))
+            # Convert to numpy array for face_recognition
+            image2 = numpy.array(pil2)
+            # Use CNN engine for accuracy, no upsampling (we've already scaled the image)
+            faces = face_recognition.face_locations(image2, number_of_times_to_upsample=0, model="cnn")
         if len(faces) > 0:
-            logmsg("{}: HOG found {} face(s)".format(f, len(faces)))
-        # Now try CNN engine for accuracy, no upsampling, if nothing found by HOG or config flag set
-        if ((len(faces) == 0) and ("noCNN" not in cfg)) or ("useCNN" in cfg):
-            cnn = face_recognition.face_locations(image2, number_of_times_to_upsample=0, model="cnn")
-            if len(cnn) > 0:
-                logmsg("{}: CNN found {} face(s)".format(f, len(cnn)))
-                # merge new faces (no overlap) with HOG
-                mrg = 0
-                for cnf in cnn:
-                    ovr = False
-                    for hog in faces:
-                        if (cnf[0]<hog[2]) and (cnf[2]>hog[0]) and (cnf[1]>hog[3]) and (cnf[3]<hog[1]):
-                            ovr = True
-                    if not ovr:
-                        faces.append(cnf)
-                        mrg += 1
-                logmsg("{}: merged {} CNN faces".format(f, mrg))
+            logmsg("{}: CNN found {} face(s)".format(f, len(faces)))
         # No faces, next file..
-        if len(faces) == 0:
+        else:
             cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
             dirty = True
             continue
@@ -368,12 +411,6 @@ for hash in candidates:
         pass
     cur.execute('DELETE FROM file_candidates where hash = ?', (hash,))
     dirty = True
-    if (cnt % 100) == 0:
-        db.commit()
-        dirty = False
-        logmsg("-- commited DB")
-    if (cnt % int(cfg['report_count'])) == 0:
-        logmsg("{} candidates checked, {} faces found, {} unknown..".format(cnt, fcs, unk))
 
 if dirty:
     db.commit()
