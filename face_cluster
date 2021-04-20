@@ -1,0 +1,156 @@
+#! /usr/bin/env python3
+
+import os, sys, pickle
+import sqlite3
+import numpy as np
+
+# Magic numbers used within
+THUMBNAIL_FACE=50
+START_CLUSTER_SIZE=50
+WIDE_DEVIATION=66.0
+
+# Open DB
+dbf = 'faces.db'
+if len(sys.argv)>2 and "-d"==sys.argv[1]:
+    dbf = sys.argv[2]
+if not os.path.exists(dbf):
+    print("No such database: {}".format(dbf))
+    sys.exit(1)
+print("opening database: {}".format(dbf))
+db = sqlite3.connect(dbf)
+# do NOT convert to/from unicode by default
+db.text_factory = bytes
+# our custom unicode convertor for row data
+def rowconv(cur, row):
+    # convert bytes => str unless the column name starts with 'pickle' (yuk!)
+    return [(v.decode('utf-8') if (isinstance(v,bytes) and not cur.description[i][0].startswith('pickle')) else v) for i,v in enumerate(row)]
+db.row_factory = rowconv
+cur = db.cursor()
+cur.execute('PRAGMA foreign_keys = ON')
+
+# Pull out all the pickled face data
+faces=[]
+cur.execute('SELECT pickled,hash,left,top,right,bottom FROM face_data')
+for row in cur:
+    vec = pickle.loads(row[0],encoding='latin-1')
+    fid = (row[1],row[2],row[3],row[4],row[5])
+    wid = int(row[4])-int(row[2])
+    hgt = int(row[5])-int(row[3])
+    # Omit faces that are 'thumbnail sized' => wid or hgt < 50
+    if wid<THUMBNAIL_FACE or hgt<THUMBNAIL_FACE:
+        continue
+    faces.append((fid,vec))
+print('{} faces loaded'.format(len(faces)))
+
+# K-Means clustering, mostly stolen from
+# https://ixora.io/itp/learning_machines/clustering-and-numpy/
+def pairwise_dist(data, cvecs):
+    return ((data[:,:,None]-cvecs.T[None,:,:])**2).sum(axis=1)
+
+def kmeans(data, k, iterations):
+    # calculate mean & stddev across vectors
+    mean = np.mean(data,axis=0)
+    stdd = np.std(data,axis=0)
+    # normalize the input data so all dimensions are in similar range [-1, 1]
+    data = (data-mean)/stdd
+    # select evenly distributed (k-means++) starting centres, which /should/
+    # provide the best chance to converge on actual clusters, derived from here:
+    # http://ethen8181.github.io/machine-learning/clustering/kmeans.html
+    n_row, n_col = data.shape
+    cvecs = np.zeros((k, n_col))
+    ridx = np.random.choice(n_row)
+    cvecs[0] = data[ridx]
+    dist = pairwise_dist(data, np.array([cvecs[0]])).flatten()
+    for it in range(1, k):
+        prob = dist**2
+        ridx = np.random.choice(n_row, size=1, p=prob/np.sum(prob))
+        cvecs[it] = data[ridx]
+        if it == k-1:
+            break
+        ndist = pairwise_dist(data, np.array([cvecs[it]])).flatten()
+        dist = np.min(np.vstack((dist, ndist)), axis=0)
+        print('centre {}  '.format(it), end='\r', flush=True)
+    print()
+    # Now we run the K-means algorithm..
+    for it in range(iterations):
+        print('Iteration: {}'.format(it),end='',flush=True)
+        # classify all vectors to nearest centre
+        cls=np.argmin(pairwise_dist(data, cvecs), axis=1)
+        assert(len(cls)==len(data))
+        print(' classified',end='',flush=True)
+        # generate k new centres, by averaging vectors in each cluster
+        ncens = np.array([data[cls==j,:].mean(axis=0) for j in range(k)])
+        # calculate variance of each cluster (average distance from centre)
+        devs = [(((data[cls==j,:]-ncens[j])**2).sum(axis=1)).mean() for j in range(k)]
+        print(' min/max deviation: {}/{}'.format(min(devs),max(devs)),end='',flush=True)
+        if (ncens == cvecs).all():
+            # nothing moved, we're done
+            print()
+            return (cls, devs)
+        cvecs = ncens
+        print(' new centres')
+    else:
+        # Only reaches here if we run out of interations
+        print('Too many iterations, stopping')
+        sys.exit(1)
+
+# Let's try and find clusters of specific (empirical) size
+K = int(len(faces)/START_CLUSTER_SIZE)
+# check for saved classifications
+classifications=None
+devs=None
+save='save-classifications.pickle'
+if os.path.exists(save):
+    with open(save,'rb') as f:
+        (classifications,devs) = pickle.load(f)
+    K=len(devs)
+    print('Loaded previous {} clusters'.format(K))
+else:
+    print('Attempting to resolve into {} clusters'.format(K))
+    # cluster the facial vectors, maximum 100 iterations
+    (classifications,devs) = kmeans(np.array([f[1] for f in faces]),K,100)
+    print('Converged initial clusters')
+
+# For all 'wide' clusters, ie: those over a certain (empirical) deviation, re-run clustering
+# to bifurcate the cluster, update classifications array, add to deviations array
+if False:
+    for c in [c for (c,d) in enumerate(devs) if d>WIDE_DEVIATION]:
+        # build an array of tuples that hold the original face position & the raw vector
+        wvecs = [(i,f[1]) for (i,f) in enumerate(faces) if classifications[i]==c]
+        print('Bifurcating wide cluster {} with {} faces'.format(c,len(wvecs)))
+        # cluster the raw vectors
+        (cls,dvs) = kmeans(np.array([v[1] for v in wvecs]),2,50)
+        # update classifications (either existing cluster or newly added one)
+        for (i,n) in enumerate(cls):
+            classifications[wvecs[i][0]] = (c if 0==n else len(devs))
+        # update deviations
+        devs[c] = dvs[0]
+        np.append(devs,dvs[1])
+
+# Safety - stash classifications in pickled file
+print('Writing clusters')
+with open(save,'wb') as f:
+    pickle.dump((classifications,devs),f)
+
+# Write out the clusters..
+# Start by clearing, then writing labels and groups for each cluster
+cur.execute('UPDATE face_data SET grp=0')
+cur.execute('DELETE FROM face_groups WHERE grp>9999')
+cur.execute('DELETE FROM face_labels WHERE label like \'Cluster%\'')
+for c in range(len(devs)):
+    group = c+10000
+    label = 'Cluster{}'.format(group)
+    print(label, devs[c])
+    cur.execute('INSERT OR IGNORE INTO face_labels (label) values(?)', (label,))
+    cur.execute('INSERT OR IGNORE INTO face_groups (grp, label) values(?,?)', (group, label))
+db.commit()
+# Now update all the faces..
+for (f,face) in enumerate(faces):
+    group = int(classifications[f]+10000)
+    assert(group>9999)
+    assert(group<len(devs)+10000)
+    cur.execute('UPDATE face_data SET grp=? WHERE hash=? AND left=? AND top=? AND right=? AND bottom=?', (group,)+face[0])
+    if (f%1000)==0:
+        db.commit()
+        print('written {}'.format(f))
+db.commit()
