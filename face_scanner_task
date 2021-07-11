@@ -289,6 +289,7 @@ logmsg("{} groups from {} faces".format(len(groups),fcs))
 
 # Work through the candidate hash/file list...
 logmsg("checking {} candidate files to find new faces..".format(len(candidates)))
+print("{} candidate files to check..".format(len(candidates)))
 print("File -> [face(s)] matched during this run:")
 cnt = 0
 fcs = 0
