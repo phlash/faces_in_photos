@@ -231,7 +231,8 @@ logmsg("hashing complete after {} files".format(cnt))
 # Any remaining paths in the path to hash table are unvisited files, so no longer exist
 # print report on files and faces being removed, then remove them
 logmsg("{} files no longer present, cleaning up database".format(len(pth)))
-print("File -> [face(s)] removed in this run:")
+if len(pth)>0:
+    print("File -> [face(s)] removed in this run:")
 for path in pth:
     cur.execute('SELECT l.label from file_paths as p, face_labels as l, face_groups as g, face_data as d where' +
             ' p.path = ? and p.hash = d.hash and d.grp = g.grp and g.label = l.label', (path,))
@@ -289,8 +290,9 @@ logmsg("{} groups from {} faces".format(len(groups),fcs))
 
 # Work through the candidate hash/file list...
 logmsg("checking {} candidate files to find new faces..".format(len(candidates)))
-print("{} candidate files to check..".format(len(candidates)))
-print("File -> [face(s)] matched during this run:")
+if len(candidates)>0:
+    print("{} candidate files to check..".format(len(candidates)))
+    print("File -> [face(s)] matched during this run:")
 cnt = 0
 fcs = 0
 unk = 0
